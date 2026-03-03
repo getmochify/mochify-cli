@@ -64,8 +64,6 @@ Free usage is 25 images per day without an API key. Visit [mochify.xyz](https://
 
 `mochify` can run as an [MCP server](https://modelcontextprotocol.io), letting Claude process images on your behalf directly from conversation.
 
-Available on [Smithery](https://smithery.ai/server/@getmochify/mochify-cli) for one-click install.
-
 ### Setup
 
 Add the following to your Claude Desktop config at `~/Library/Application Support/Claude/claude_desktop_config.json`:
