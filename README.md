@@ -6,11 +6,11 @@ Compress and convert images to modern formats (AVIF, JXL, WebP, Jpegli) from you
 
 ## Installation
 
+Download the latest binary from [Releases](https://github.com/getmochify/mochify-cli/releases), or build from source:
+
 ```bash
 cargo install --path .
 ```
-
-Or build manually:
 
 ```bash
 cargo build --release
@@ -33,6 +33,7 @@ mochify [OPTIONS] <FILES>...
 | `--crop` | Crop to exact dimensions |
 | `-r, --rotation <DEG>` | Rotation: `0`, `90`, `180`, `270` |
 | `-o, --output <DIR>` | Output directory (default: same as input) |
+| `-p, --prompt <TEXT>` | Natural-language prompt — resolves params automatically |
 | `-k, --api-key <KEY>` | API key (or set `MOCHIFY_API_KEY` env var) |
 
 ### Examples
@@ -49,6 +50,12 @@ mochify ./images/*.jpg -t avif -w 1200 -o ./compressed
 
 # With an API key
 MOCHIFY_API_KEY=your-key mochify photo.jpg -t jxl
+
+# Use a natural-language prompt instead of explicit flags
+mochify photo.jpg -p "convert to avif and resize to 1200px wide"
+
+# Prompt works with multiple files too
+mochify ./images/*.jpg -p "compress for web, keep under 1000px wide" -o ./out
 ```
 
 Free usage is 25 images per day without an API key. Visit [mochify.xyz](https://mochify.xyz) for more.
