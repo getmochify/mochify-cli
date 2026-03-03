@@ -6,7 +6,9 @@ use anyhow::Result;
 use api::{MochifyClient, ProcessParams};
 use clap::Parser;
 use cli::{Args, Commands};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -38,8 +40,11 @@ async fn process_files(args: Args) -> Result<()> {
 
     // If a prompt was supplied, resolve params for all files in one request.
     let prompt_map = if let Some(ref prompt) = args.prompt {
+        let sp = spinner("Parsing prompt...");
         let paths: Vec<&std::path::Path> = args.files.iter().map(|p| p.as_path()).collect();
-        Some(client.resolve_prompt(prompt, &paths).await?)
+        let map = client.resolve_prompt(prompt, &paths).await?;
+        sp.finish_and_clear();
+        Some(map)
     } else {
         None
     };
@@ -65,9 +70,17 @@ async fn process_files(args: Args) -> Result<()> {
             None => explicit.clone(),
         };
 
+        let name = file_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let sp = spinner(format!("Uploading {name}..."));
         match client.squish(file_path, &params, &out_dir).await {
-            Ok(out) => println!("{}", out.display()),
-            Err(e) => eprintln!("Error processing {}: {e:#}", file_path.display()),
+            Ok(out) => {
+                sp.finish_and_clear();
+                println!("{}", out.display());
+            }
+            Err(e) => {
+                sp.finish_and_clear();
+                eprintln!("Error processing {}: {e:#}", file_path.display());
+            }
         }
     }
 
@@ -84,6 +97,19 @@ fn merge_params(base: ProcessParams, overrides: ProcessParams) -> ProcessParams 
         crop: overrides.crop.or(base.crop),
         rotation: overrides.rotation.or(base.rotation),
     }
+}
+
+fn spinner(msg: impl Into<String>) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+            .template("{spinner} {msg}")
+            .unwrap(),
+    );
+    pb.set_message(msg.into());
+    pb.enable_steady_tick(Duration::from_millis(80));
+    pb
 }
 
 async fn run_mcp_server(api_key: Option<String>) -> Result<()> {
