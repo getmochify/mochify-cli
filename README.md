@@ -3,6 +3,10 @@
 [![MCP Badge](https://lobehub.com/badge/mcp/getmochify-mochify-cli)](https://lobehub.com/mcp/getmochify-mochify-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+<a href="https://glama.ai/mcp/servers/@getmochify/mochify-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@getmochify/mochify-mcp/badge" />
+</a>
+
 A command-line tool and MCP server for [mochify.xyz](https://mochify.xyz) — a fast, privacy-first image compression and conversion API powered by a native C++ engine.
 
 Compress and convert images to modern formats (AVIF, JXL, WebP, Jpegli) from your terminal, or give AI assistants like Claude direct access to image processing via the [Model Context Protocol](https://modelcontextprotocol.io).
