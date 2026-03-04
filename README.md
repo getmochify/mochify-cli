@@ -1,6 +1,7 @@
 # mochify-cli
 
 [![MCP Badge](https://lobehub.com/badge/mcp/getmochify-mochify-cli)](https://lobehub.com/mcp/getmochify-mochify-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A command-line tool and MCP server for [mochify.xyz](https://mochify.xyz) — a fast, privacy-first image compression and conversion API powered by a native C++ engine.
 
