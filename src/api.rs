@@ -96,8 +96,14 @@ impl MochifyClient {
 
         let response = req.send().await.context("prompt request failed")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        if !status.is_success() {
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                anyhow::bail!(
+                    "Rate limit exceeded. You've hit the free tier limit of 25 requests/day. \
+                     Upgrade to a Pro account at https://mochify.xyz for a higher limit."
+                );
+            }
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("API error {status}: {body}");
         }
@@ -169,8 +175,14 @@ impl MochifyClient {
 
         let response = req.send().await.context("request failed")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        if !status.is_success() {
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                anyhow::bail!(
+                    "Rate limit exceeded. You've hit the free tier limit of 25 requests/day. \
+                     Upgrade to a Pro account at https://mochify.xyz for a higher limit."
+                );
+            }
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("API error {status}: {body}");
         }
