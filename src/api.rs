@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 
 const BASE_URL: &str = "https://api.mochify.xyz";
+const WORKER_URL: &str = "https://tokens.mochify.xyz";
 
 #[derive(Debug, Default, Clone)]
 pub struct ProcessParams {
@@ -114,7 +115,7 @@ impl MochifyClient {
         let body = PromptRequest { prompt, file_data };
         let mut req = self
             .client
-            .post(format!("{BASE_URL}/v1/prompt"))
+            .post(format!("{WORKER_URL}/v1/prompt"))
             .json(&body);
 
         if let Some(ref key) = self.api_key {
@@ -129,7 +130,7 @@ impl MochifyClient {
                 if self.api_key.is_none() {
                     anyhow::bail!(
                         "Rate limit exceeded. Unauthenticated requests are limited to 3/month per IP. \
-                         Sign up at https://mochify.xyz to get 30 free requests/month."
+                         Sign up at https://mochify.xyz to get 25 free requests/month."
                     );
                 } else {
                     anyhow::bail!(
@@ -215,7 +216,7 @@ impl MochifyClient {
                 if self.api_key.is_none() {
                     anyhow::bail!(
                         "Rate limit exceeded. Unauthenticated requests are limited to 3/month per IP. \
-                         Sign up at https://mochify.xyz to get 30 free requests/month."
+                         Sign up at https://mochify.xyz to get 25 free requests/month."
                     );
                 } else {
                     anyhow::bail!(
