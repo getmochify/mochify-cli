@@ -7,7 +7,7 @@
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@getmochify/mochify-mcp/badge" />
 </a>
 
-A command-line tool and MCP server for [mochify.xyz](https://mochify.app) — a fast, privacy-first image compression and conversion API powered by a native C++ engine.
+A command-line tool and MCP server for [mochify.app](https://mochify.app) — a fast, privacy-first image compression and conversion API powered by a native C++ engine.
 
 Compress and convert images to modern formats (AVIF, JXL, WebP, Jpegli) from your terminal, or give AI assistants like Claude direct access to image processing via the [Model Context Protocol](https://modelcontextprotocol.io).
 
@@ -42,6 +42,23 @@ sudo mv mochify /usr/local/bin/
 cargo install --path .
 ```
 
+## Authentication
+
+Sign in with your [mochify.app](https://mochify.app) account to unlock your full quota:
+
+```bash
+mochify auth login
+```
+
+This opens your browser, where you sign in and authorize the CLI. Your credentials are saved automatically to `~/.config/mochify/credentials.toml` — no environment variables or manual key copying required. Both the CLI and MCP server pick them up automatically.
+
+```bash
+mochify auth status   # check whether you're signed in
+mochify auth logout   # remove saved credentials
+```
+
+Free tier (unauthenticated) is limited to 25 images per day. Sign up at [mochify.app](https://mochify.app).
+
 ## CLI Usage
 
 ```bash
@@ -59,7 +76,7 @@ mochify [OPTIONS] <FILES>...
 | `-r, --rotation <DEG>` | Rotation: `0`, `90`, `180`, `270` |
 | `-o, --output <DIR>` | Output directory (default: same as input) |
 | `-p, --prompt <TEXT>` | Natural-language prompt — resolves params automatically |
-| `-k, --api-key <KEY>` | API key (or set `MOCHIFY_API_KEY` env var) |
+| `-k, --api-key <KEY>` | API key override (or set `MOCHIFY_API_KEY` env var) |
 
 ### Examples
 
@@ -73,9 +90,6 @@ mochify photo.jpg -t webp -w 800
 # Batch convert a folder to AVIF at 1200px wide
 mochify ./images/*.jpg -t avif -w 1200 -o ./compressed
 
-# With an API key
-MOCHIFY_API_KEY=your-key mochify photo.jpg -t jxl
-
 # Use a natural-language prompt instead of explicit flags
 mochify photo.jpg -p "convert to avif and resize to 1200px wide"
 
@@ -83,15 +97,13 @@ mochify photo.jpg -p "convert to avif and resize to 1200px wide"
 mochify ./images/*.jpg -p "compress for web, keep under 1000px wide" -o ./out
 ```
 
-Free usage is 25 images per day without an API key. Visit [mochify.xyz](https://mochify.xyz) for more.
-
 ## MCP Server (Claude Desktop)
 
 `mochify` can run as an [MCP server](https://modelcontextprotocol.io), letting Claude process images on your behalf directly from conversation.
 
 ### Setup
 
-Add the following to your Claude Desktop config at `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Run `mochify auth login` first, then add the following to your Claude Desktop config at `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -104,23 +116,7 @@ Add the following to your Claude Desktop config at `~/Library/Application Suppor
 }
 ```
 
-With an API key (for higher limits):
-
-```json
-{
-  "mcpServers": {
-    "mochify": {
-      "command": "mochify",
-      "args": ["serve"],
-      "env": {
-        "MOCHIFY_API_KEY": "your-key-here"
-      }
-    }
-  }
-}
-```
-
-Restart Claude Desktop. The mochify server will appear in your connections.
+Restart Claude Desktop. The mochify server will appear in your connections and use your saved credentials automatically.
 
 ### Usage
 
@@ -134,10 +130,10 @@ Claude will call the `squish` tool automatically.
 
 ## API
 
-Powered by the mochify.xyz API at `https://api.mochify.xyz/v1/squish`.
+Powered by the mochify API at `https://api.mochify.xyz/v1/squish`.
 
 - Images are processed in-memory and never stored on disk
 - Supports JPEG (Jpegli), AVIF, JXL, WebP, and PNG output
 - Up to 25MB per image
 
-Visit [mochify.xyz](https://mochify.xyz) for the web interface.
+Visit [mochify.app](https://mochify.app) for the web interface.
