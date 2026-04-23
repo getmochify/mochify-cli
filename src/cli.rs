@@ -49,4 +49,19 @@ pub enum Commands {
     Serve,
     /// Show API usage for the current key
     Usage,
+    /// Authenticate with Mochify via browser
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AuthAction {
+    /// Open browser to sign in and save credentials locally
+    Login,
+    /// Remove saved credentials
+    Logout,
+    /// Show current authentication status
+    Status,
 }

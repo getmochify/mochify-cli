@@ -135,7 +135,7 @@ impl MochifyClient {
                 } else {
                     anyhow::bail!(
                         "Rate limit exceeded. You've hit your plan's monthly limit. \
-                         Upgrade at https://mochify.xyz for higher limits (Lite: 300/month, Pro: 1200/month)."
+                         Upgrade at https://mochify.xyz for higher limits (Seller: 300/month, Pro: 1200/month)."
                     );
                 }
             }
@@ -221,7 +221,7 @@ impl MochifyClient {
                 } else {
                     anyhow::bail!(
                         "Rate limit exceeded. You've hit your plan's monthly limit. \
-                         Upgrade at https://mochify.xyz for higher limits (Lite: 300/month, Pro: 1200/month)."
+                         Upgrade at https://mochify.xyz for higher limits (Seller: 300/month, Pro: 1200/month)."
                     );
                 }
             }

@@ -1,18 +1,27 @@
 mod api;
 mod cli;
+mod credentials;
 mod mcp;
 
 use anyhow::Result;
 use api::{MochifyClient, ProcessParams};
 use clap::Parser;
-use cli::{Args, Commands};
+use cli::{Args, AuthAction, Commands};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::time::Duration;
 
+const WORKER_URL: &str = "https://tokens.mochify.xyz";
+const AUTH_URL: &str = "https://mochify.xyz/auth/cli";
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    // Fall back to saved credentials if no key was supplied via flag or env.
+    if args.api_key.is_none() {
+        args.api_key = credentials::load();
+    }
 
     match args.command {
         Some(Commands::Serve) => run_mcp_server(args.api_key).await,
@@ -23,6 +32,11 @@ async fn main() -> Result<()> {
             println!("Available: {}", usage.available);
             Ok(())
         }
+        Some(Commands::Auth { action }) => match action {
+            AuthAction::Login => auth_login().await,
+            AuthAction::Logout => auth_logout(),
+            AuthAction::Status => auth_status(),
+        },
         None => {
             if args.files.is_empty() {
                 eprintln!("No input files specified. Run with --help for usage.");
@@ -31,6 +45,78 @@ async fn main() -> Result<()> {
             process_files(args).await
         }
     }
+}
+
+async fn auth_login() -> Result<()> {
+    use rand::RngCore;
+
+    let mut state_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut state_bytes);
+    let state: String = state_bytes.iter().map(|b| format!("{b:02x}")).collect();
+
+    let url = format!("{AUTH_URL}?state={state}");
+
+    if open::that(&url).is_err() {
+        println!("Open this URL in your browser to sign in:");
+        println!("  {url}");
+    } else {
+        println!("Browser opened. Sign in and authorize the CLI...");
+    }
+
+    let sp = spinner("Waiting for authorization (times out in 5 minutes)...");
+    let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(300);
+
+    loop {
+        if std::time::Instant::now() >= deadline {
+            sp.finish_and_clear();
+            anyhow::bail!("Authorization timed out. Run `mochify auth login` to try again.");
+        }
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let res = client
+            .get(format!("{WORKER_URL}/v1/cli/poll/{state}"))
+            .send()
+            .await;
+
+        let Ok(response) = res else { continue };
+
+        match response.status().as_u16() {
+            404 => continue,
+            200 => {
+                #[derive(serde::Deserialize)]
+                struct PollResponse {
+                    #[serde(rename = "apiKey")]
+                    api_key: String,
+                }
+                if let Ok(body) = response.json::<PollResponse>().await {
+                    sp.finish_and_clear();
+                    credentials::save(&body.api_key)?;
+                    println!("Authenticated! Credentials saved to ~/.config/mochify/credentials.toml");
+                }
+                return Ok(());
+            }
+            _ => continue,
+        }
+    }
+}
+
+fn auth_logout() -> Result<()> {
+    credentials::clear()?;
+    println!("Credentials removed.");
+    Ok(())
+}
+
+fn auth_status() -> Result<()> {
+    match credentials::load() {
+        Some(key) => {
+            let preview = &key[..key.len().min(8)];
+            println!("Authenticated (key: {preview}…)");
+        }
+        None => println!("Not authenticated. Run `mochify auth login` to sign in."),
+    }
+    Ok(())
 }
 
 async fn process_files(args: Args) -> Result<()> {
