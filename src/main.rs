@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const WORKER_URL: &str = "https://tokens.mochify.xyz";
-const AUTH_URL: &str = "https://mochify.xyz/auth/cli";
+const AUTH_URL: &str = "https://mochify.app/auth/cli";
 
 #[tokio::main]
 async fn main() -> Result<()> {
