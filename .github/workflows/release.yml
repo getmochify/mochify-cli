@@ -57,3 +57,66 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact }}
+
+  homebrew:
+    name: Update Homebrew Formula
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: getmochify/homebrew-mochify
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Compute SHA256 hashes
+        id: sha
+        run: |
+          VERSION="${{ github.ref_name }}"
+          BASE="https://github.com/getmochify/mochify-cli/releases/download/${VERSION}"
+          ARM64_SHA=$(curl -sL "${BASE}/mochify-macos-arm64" | sha256sum | awk '{print $1}')
+          X86_SHA=$(curl -sL "${BASE}/mochify-macos-x86_64" | sha256sum | awk '{print $1}')
+          echo "arm64_sha=${ARM64_SHA}" >> "$GITHUB_OUTPUT"
+          echo "x86_sha=${X86_SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Write formula
+        run: |
+          VERSION="${{ steps.sha.outputs.version }}"
+          ARM64_SHA="${{ steps.sha.outputs.arm64_sha }}"
+          X86_SHA="${{ steps.sha.outputs.x86_sha }}"
+          cat > Formula/mochify.rb << EOF
+          class Mochify < Formula
+            desc "CLI and MCP server for AI-powered image optimization via mochify.app"
+            homepage "https://mochify.app"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/getmochify/mochify-cli/releases/download/v${VERSION}/mochify-macos-arm64"
+                sha256 "${ARM64_SHA}"
+              end
+              on_intel do
+                url "https://github.com/getmochify/mochify-cli/releases/download/v${VERSION}/mochify-macos-x86_64"
+                sha256 "${X86_SHA}"
+              end
+            end
+
+            def install
+              bin.install stable.url.split("/").last => "mochify"
+            end
+
+            test do
+              assert_match "mochify", shell_output("#{bin}/mochify --version")
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/mochify.rb
+          git commit -m "mochify ${{ steps.sha.outputs.version }}"
+          git push

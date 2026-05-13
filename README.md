@@ -130,7 +130,7 @@ Claude will call the `squish` tool automatically.
 
 ## API
 
-Powered by the mochify API at `https://api.mochify.xyz/v1/squish`.
+Powered by the mochify API at `https://api.mochify.app/v1/squish`.
 
 - Images are processed in-memory and never stored on disk
 - Supports JPEG (Jpegli), AVIF, JXL, WebP, and PNG output

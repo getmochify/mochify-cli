@@ -50,7 +50,7 @@ impl MochifyMcp {
 
 #[tool_router]
 impl MochifyMcp {
-    #[tool(description = "Process an image using the mochify.xyz API. Supports format conversion (jpg/png/webp/avif/jxl), resizing, cropping, and rotation.")]
+    #[tool(description = "Process an image using the mochify.app API. Supports format conversion (jpg/png/webp/avif/jxl), resizing, cropping, and rotation.")]
     async fn squish(&self, Parameters(input): Parameters<SquishInput>) -> String {
         let path = PathBuf::from(&input.file_path);
 

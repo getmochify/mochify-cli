@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
-const BASE_URL: &str = "https://api.mochify.xyz";
-const WORKER_URL: &str = "https://tokens.mochify.xyz";
+const BASE_URL: &str = "https://api.mochify.app";
+const WORKER_URL: &str = "https://";
 
 #[derive(Debug, Default, Clone)]
 pub struct ProcessParams {
@@ -78,7 +78,7 @@ impl MochifyClient {
                 anyhow::bail!(
                     "Usage tracking requires an API key. \
                      Set MOCHIFY_API_KEY or pass --api-key. \
-                     Sign up at https://mochify.xyz to get one."
+                     Sign up at https://mochify.app to get one."
                 );
             }
             let body = response.text().await.unwrap_or_default();
@@ -130,12 +130,12 @@ impl MochifyClient {
                 if self.api_key.is_none() {
                     anyhow::bail!(
                         "Rate limit exceeded. Unauthenticated requests are limited to 3/month per IP. \
-                         Sign up at https://mochify.xyz to get 25 free requests/month."
+                         Sign up at https://mochify.app to get 25 free requests/month."
                     );
                 } else {
                     anyhow::bail!(
                         "Rate limit exceeded. You've hit your plan's monthly limit. \
-                         Upgrade at https://mochify.xyz for higher limits (Seller: 300/month, Pro: 1200/month)."
+                         Upgrade at https://mochify.app for higher limits (Seller: 300/month, Pro: 1200/month)."
                     );
                 }
             }
@@ -216,12 +216,12 @@ impl MochifyClient {
                 if self.api_key.is_none() {
                     anyhow::bail!(
                         "Rate limit exceeded. Unauthenticated requests are limited to 3/month per IP. \
-                         Sign up at https://mochify.xyz to get 25 free requests/month."
+                         Sign up at https://mochify.app to get 25 free requests/month."
                     );
                 } else {
                     anyhow::bail!(
                         "Rate limit exceeded. You've hit your plan's monthly limit. \
-                         Upgrade at https://mochify.xyz for higher limits (Seller: 300/month, Pro: 1200/month)."
+                         Upgrade at https://mochify.app for higher limits (Seller: 300/month, Pro: 1200/month)."
                     );
                 }
             }

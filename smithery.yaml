@@ -1,0 +1,16 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      apiKey:
+        type: string
+        description: Your Mochify API key. Generate one from https://mochify.app/dashboard after signing in.
+    required:
+      - apiKey
+  commandFunction: |-
+    (config) => ({
+      command: "mochify",
+      args: ["serve"],
+      env: { MOCHIFY_API_KEY: config.apiKey }
+    })

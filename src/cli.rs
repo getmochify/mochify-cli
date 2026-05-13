@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "mochify", about = "CLI for the mochify.xyz image processing API")]
+#[command(name = "mochify", about = "CLI for the mochify.app image processing API")]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Commands>,

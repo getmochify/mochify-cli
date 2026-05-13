@@ -11,7 +11,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::time::Duration;
 
-const WORKER_URL: &str = "https://tokens.mochify.xyz";
+const WORKER_URL: &str = "https://tokens.mochify.app";
 const AUTH_URL: &str = "https://mochify.app/auth/cli";
 
 #[tokio::main]

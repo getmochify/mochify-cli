@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`mochify-cli` is a Rust CLI tool and MCP server that wraps the [mochify.xyz](https://mochify.xyz) image processing API (`POST https://api.mochify.xyz/v1/squish`). It uploads local images via multipart form and saves the processed result.
+`mochify-cli` is a Rust CLI tool and MCP server that wraps the [mochify.app](https://mochify.app) image processing API (`POST https://api.mochify.app/v1/squish`). It uploads local images via multipart form and saves the processed result.
 
 ## Commands
 

@@ -5,7 +5,7 @@ description: Use this skill whenever the user wants to compress, convert, resize
 
 # Mochify — Image Compression & Conversion
 
-Use the `squish` tool to process images via the mochify.xyz API.
+Use the `squish` tool to process images via the mochify.app API.
 
 ## Parameters
 
