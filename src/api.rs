@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 
 const BASE_URL: &str = "https://api.mochify.app";
-const WORKER_URL: &str = "https://";
+const WORKER_URL: &str = "https://tokens.mochify.app";
 
 #[derive(Debug, Default, Clone)]
 pub struct ProcessParams {
