@@ -119,7 +119,7 @@ impl MochifyClient {
             .json(&body);
 
         if let Some(ref key) = self.api_key {
-            req = req.header("Authorization", format!("Bearer {key}"));
+            req = req.header("X-Api-Key", key.as_str());
         }
 
         let response = req.send().await.context("prompt request failed")?;
