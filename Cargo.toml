@@ -1,8 +1,14 @@
 [package]
-name = "mochify-cli"
+name = "mochify"
 version = "1.0.4"
 edition = "2024"
 license = "MIT"
+description = "CLI and MCP server for privacy-first image compression and conversion via mochify.app"
+repository = "https://github.com/getmochify/mochify-cli"
+homepage = "https://mochify.app"
+readme = "README.md"
+keywords = ["image", "compression", "avif", "webp", "mcp"]
+categories = ["command-line-utilities", "multimedia::images"]
 
 [[bin]]
 name = "mochify"

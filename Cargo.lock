@@ -849,7 +849,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mochify-cli"
+name = "mochify"
 version = "1.0.4"
 dependencies = [
  "anyhow",
