@@ -144,6 +144,7 @@ async fn process_files(args: Args) -> Result<()> {
         height: args.height,
         crop: if args.crop { Some(true) } else { None },
         rotation: args.rotation,
+        out_name_suffix: None,
     };
 
     // If a prompt was supplied, resolve params for all files in one request.
@@ -166,28 +167,34 @@ async fn process_files(args: Args) -> Result<()> {
                 .unwrap_or_else(|| PathBuf::from(".")),
         };
 
-        let params = match &prompt_map {
+        let variants: Vec<ProcessParams> = match &prompt_map {
             Some(map) => {
                 let filename = file_path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or_default();
-                let base = map.get(filename).cloned().unwrap_or_default();
-                merge_params(base, explicit.clone())
+                let base_variants = map.get(filename).cloned().unwrap_or_else(|| vec![ProcessParams::default()]);
+                base_variants.into_iter().map(|base| merge_params(base, explicit.clone())).collect()
             }
-            None => explicit.clone(),
+            None => vec![explicit.clone()],
         };
 
         let name = file_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let sp = spinner(format!("Uploading {name}..."));
-        match client.squish(file_path, &params, &out_dir).await {
-            Ok(out) => {
-                sp.finish_and_clear();
-                println!("{}", out.display());
-            }
-            Err(e) => {
-                sp.finish_and_clear();
-                eprintln!("Error processing {}: {e:#}", file_path.display());
+        for params in &variants {
+            let label = match &params.out_name_suffix {
+                Some(s) => format!("{name}{s}"),
+                None => name.clone(),
+            };
+            let sp = spinner(format!("Processing {label}..."));
+            match client.squish(file_path, params, &out_dir).await {
+                Ok(out) => {
+                    sp.finish_and_clear();
+                    println!("{}", out.display());
+                }
+                Err(e) => {
+                    sp.finish_and_clear();
+                    eprintln!("Error processing {label}: {e:#}");
+                }
             }
         }
     }
@@ -204,6 +211,7 @@ fn merge_params(base: ProcessParams, overrides: ProcessParams) -> ProcessParams 
         height: overrides.height.or(base.height),
         crop: overrides.crop.or(base.crop),
         rotation: overrides.rotation.or(base.rotation),
+        out_name_suffix: base.out_name_suffix, // always from NLP — explicit flags don't override naming
     }
 }
 

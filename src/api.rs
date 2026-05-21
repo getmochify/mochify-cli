@@ -14,6 +14,14 @@ pub struct ProcessParams {
     pub height: Option<u32>,
     pub crop: Option<bool>,
     pub rotation: Option<u32>,
+    /// Suffix appended to the output filename stem for multi-variant jobs (e.g. "_500w_webp").
+    pub out_name_suffix: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SizeEntry {
+    width: u32,
+    height: u32,
 }
 
 #[derive(Serialize)]
@@ -46,6 +54,10 @@ struct PromptFileResult {
     crop: Option<bool>,
     #[serde(default)]
     rotate: u32,
+    /// Multi-format: set when NLP returns more than one output format.
+    types: Option<Vec<String>>,
+    /// Multi-size: set when NLP returns more than one output size.
+    sizes: Option<Vec<SizeEntry>>,
 }
 
 #[derive(Deserialize)]
@@ -93,7 +105,7 @@ impl MochifyClient {
         &self,
         prompt: &str,
         files: &[&Path],
-    ) -> Result<HashMap<String, ProcessParams>> {
+    ) -> Result<HashMap<String, Vec<ProcessParams>>> {
         let mut file_data = Vec::new();
         for &path in files {
             let path_clone = path.to_path_buf();
@@ -146,16 +158,52 @@ impl MochifyClient {
         let prompt_response: PromptResponse =
             response.json().await.context("failed to parse prompt response")?;
 
-        let mut result = HashMap::new();
+        let mut result: HashMap<String, Vec<ProcessParams>> = HashMap::new();
         for file in prompt_response.files {
-            let params = ProcessParams {
-                format: file.format,
-                width: file.width,
-                height: file.height,
-                crop: file.crop,
-                rotation: (file.rotate != 0).then_some(file.rotate),
+            let formats: Vec<String> = match &file.types {
+                Some(types) if types.len() > 1 => types.clone(),
+                _ => vec![file.format.clone().unwrap_or_else(|| "jpg".to_string())],
             };
-            result.insert(file.filename, params);
+            let sizes: Vec<(Option<u32>, Option<u32>)> = match &file.sizes {
+                Some(sizes) if sizes.len() > 1 => {
+                    sizes.iter().map(|s| (Some(s.width), Some(s.height))).collect()
+                }
+                _ => vec![(file.width, file.height)],
+            };
+
+            let multi_format = formats.len() > 1;
+            let multi_size = sizes.len() > 1;
+
+            let mut variants = Vec::new();
+            for (w, h) in &sizes {
+                for fmt in &formats {
+                    let size_suffix = if multi_size {
+                        match (w.filter(|&v| v > 0), h.filter(|&v| v > 0)) {
+                            (Some(w), Some(h)) => format!("_{w}x{h}"),
+                            (Some(w), _) => format!("_{w}w"),
+                            (_, Some(h)) => format!("_{h}h"),
+                            _ => String::new(),
+                        }
+                    } else {
+                        String::new()
+                    };
+                    let fmt_suffix = if multi_format { format!("_{fmt}") } else { String::new() };
+                    let out_name_suffix = if multi_format || multi_size {
+                        Some(format!("{size_suffix}{fmt_suffix}"))
+                    } else {
+                        None
+                    };
+                    variants.push(ProcessParams {
+                        format: Some(fmt.clone()),
+                        width: *w,
+                        height: *h,
+                        crop: file.crop,
+                        rotation: (file.rotate != 0).then_some(file.rotate),
+                        out_name_suffix,
+                    });
+                }
+            }
+            result.insert(file.filename, variants);
         }
         Ok(result)
     }
@@ -243,10 +291,12 @@ impl MochifyClient {
                 .unwrap_or("jpg"),
         );
 
-        // If the output would land on the exact same path as the input, append _mochified
-        // so the user can see something actually happened.
+        // Multi-variant jobs carry an explicit suffix (e.g. "_500w_webp").
+        // Single-variant jobs that would overwrite the input get _mochified instead.
         let candidate = out_dir.join(format!("{stem}.{ext}"));
-        let base_stem = if candidate == file_path {
+        let base_stem = if let Some(ref suffix) = params.out_name_suffix {
+            format!("{stem}{suffix}")
+        } else if candidate == file_path {
             format!("{stem}_mochified")
         } else {
             stem.to_string()

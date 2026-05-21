@@ -69,6 +69,7 @@ impl MochifyMcp {
             height: input.height,
             crop: input.crop,
             rotation: input.rotation,
+            out_name_suffix: None,
         };
 
         match client.squish(&path, &params, &out_dir).await {
