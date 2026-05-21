@@ -50,14 +50,14 @@ Sign in with your [mochify.app](https://mochify.app) account to unlock your full
 mochify auth login
 ```
 
-This opens your browser, where you sign in and authorize the CLI. Your credentials are saved automatically to `~/.config/mochify/credentials.toml` — no environment variables or manual key copying required. Both the CLI and MCP server pick them up automatically.
+This opens your browser, where you sign in and authorize the CLI. Credentials are saved automatically to `~/.config/mochify/credentials.toml` — no environment variables or manual key copying required. Both the CLI and MCP server pick them up automatically.
 
 ```bash
 mochify auth status   # check whether you're signed in
 mochify auth logout   # remove saved credentials
 ```
 
-Free tier (unauthenticated) is limited to 25 images per day. Sign up at [mochify.app](https://mochify.app).
+Without an account you get 3 images per batch (IP-based). With a free account: 25 images/month. Sign up at [mochify.app](https://mochify.app).
 
 ## CLI Usage
 
@@ -72,16 +72,16 @@ mochify [OPTIONS] <FILES>...
 | `-t, --type <FORMAT>` | Output format: `jpg`, `png`, `webp`, `avif`, `jxl` |
 | `-w, --width <N>` | Target width in pixels |
 | `-H, --height <N>` | Target height in pixels |
-| `--crop` | Crop to exact dimensions |
+| `--crop` | Crop to exact dimensions (saliency-guided) |
 | `-r, --rotation <DEG>` | Rotation: `0`, `90`, `180`, `270` |
 | `-o, --output <DIR>` | Output directory (default: same as input) |
-| `-p, --prompt <TEXT>` | Natural-language prompt — resolves params automatically |
+| `-p, --prompt <TEXT>` | Natural-language prompt — resolves all params automatically |
 | `-k, --api-key <KEY>` | API key override (or set `MOCHIFY_API_KEY` env var) |
 
 ### Examples
 
 ```bash
-# Convert a JPEG to AVIF
+# Convert to AVIF
 mochify photo.jpg -t avif
 
 # Resize and convert to WebP
@@ -90,12 +90,21 @@ mochify photo.jpg -t webp -w 800
 # Batch convert a folder to AVIF at 1200px wide
 mochify ./images/*.jpg -t avif -w 1200 -o ./compressed
 
-# Use a natural-language prompt instead of explicit flags
-mochify photo.jpg -p "convert to avif and resize to 1200px wide"
+# Natural-language prompt — let the AI pick the right params
+mochify photo.jpg -p "convert to avif, 1200px wide"
+mochify photo.jpg -p "optimise for eBay"
+mochify photo.jpg -p "remove background and convert to WebP"
+mochify photo.jpg -p "resize to 50%, strip EXIF, keep as WebP"
 
-# Prompt works with multiple files too
-mochify ./images/*.jpg -p "compress for web, keep under 1000px wide" -o ./out
+# Pipe file paths from stdin
+find . -name "*.jpg" | mochify -t webp -o ./out
+cat images.txt | mochify -p "convert to avif 1200px wide" -o ./compressed
+ls *.heic | mochify -t jpg
 ```
+
+### Output file naming
+
+When the output format and directory match the input, the result is saved as `{name}_mochified.{ext}` so it's always clear something happened. If that file already exists (e.g. you run it twice), a numeric suffix is added: `{name}_mochified_1.{ext}`, `_2`, etc. When the format changes (e.g. `.jpg` → `.webp`), the extension change is already unambiguous so no suffix is added.
 
 ## MCP Server (Claude Desktop)
 
@@ -120,20 +129,27 @@ Restart Claude Desktop. The mochify server will appear in your connections and u
 
 ### Usage
 
-Just describe what you want in natural language, with the full path to your image:
+Describe what you want in natural language with the full path to your image:
 
 > "Convert `/Users/me/Desktop/photo.jpg` to AVIF at 1000px wide"
 
-> "Compress all the JPEGs in `/Users/me/projects/blog/images/` to WebP and save them to `/Users/me/projects/blog/compressed/`"
+> "Compress all the JPEGs in `/Users/me/projects/blog/images/` to WebP and save to `/Users/me/projects/blog/compressed/`"
 
-Claude will call the `squish` tool automatically.
+> "Optimise `/Users/me/Desktop/product.jpg` for eBay"
+
+> "Remove the background from `/Users/me/Desktop/shirt.png` and save as WebP"
+
+Claude calls the `squish` tool automatically and reports back the saved path and file size.
 
 ## API
 
-Powered by the mochify API at `https://api.mochify.app/v1/squish`.
+Powered by `https://api.mochify.app/v1/squish`. Images are processed in-memory and never written to disk.
 
-- Images are processed in-memory and never stored on disk
-- Supports JPEG (Jpegli), AVIF, JXL, WebP, and PNG output
-- Up to 25MB per image
+| Plan | Ops/month | Max file size |
+|---|---|---|
+| Free (no account) | 3/batch | 20 MB |
+| Free (with account) | 25 | 20 MB |
+| Seller ($7.99/mo) | 300 | 75 MB |
+| Pro ($24.99/mo) | 1,200 | 75 MB |
 
-Visit [mochify.app](https://mochify.app) for the web interface.
+Visit [mochify.app](https://mochify.app) for the web interface, pricing, and API docs.
