@@ -38,6 +38,21 @@ async fn main() -> Result<()> {
             AuthAction::Status => auth_status(),
         },
         None => {
+            // If no files were given as arguments, try reading paths from stdin
+            // (e.g. `find . -name "*.jpg" | mochify -t webp`).
+            if args.files.is_empty() {
+                use std::io::{self, BufRead};
+                if !atty::is(atty::Stream::Stdin) {
+                    let stdin = io::stdin();
+                    for line in stdin.lock().lines() {
+                        let line = line?;
+                        let trimmed = line.trim().to_string();
+                        if !trimmed.is_empty() {
+                            args.files.push(PathBuf::from(trimmed));
+                        }
+                    }
+                }
+            }
             if args.files.is_empty() {
                 eprintln!("No input files specified. Run with --help for usage.");
                 std::process::exit(1);

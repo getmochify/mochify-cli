@@ -243,7 +243,24 @@ impl MochifyClient {
                 .unwrap_or("jpg"),
         );
 
-        let out_path = out_dir.join(format!("{stem}.{ext}"));
+        // If the output would land on the exact same path as the input, append _mochified
+        // so the user can see something actually happened.
+        let candidate = out_dir.join(format!("{stem}.{ext}"));
+        let base_stem = if candidate == file_path {
+            format!("{stem}_mochified")
+        } else {
+            stem.to_string()
+        };
+
+        // Dedup: if the target already exists, increment until we find a free slot.
+        let mut out_path = out_dir.join(format!("{base_stem}.{ext}"));
+        if out_path.exists() {
+            let mut n = 1u32;
+            while out_path.exists() {
+                out_path = out_dir.join(format!("{base_stem}_{n}.{ext}"));
+                n += 1;
+            }
+        }
 
         fs::write(&out_path, &image_bytes)
             .await
