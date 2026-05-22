@@ -34,6 +34,10 @@ pub struct Args {
     #[arg(short, long, value_name = "DIR")]
     pub output: Option<PathBuf>,
 
+    /// Base name for the output file (without extension)
+    #[arg(short = 'n', long, value_name = "NAME")]
+    pub name: Option<String>,
+
     /// Natural-language prompt — calls /v1/prompt to resolve params
     #[arg(short = 'p', long, value_name = "TEXT")]
     pub prompt: Option<String>,

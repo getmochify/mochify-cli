@@ -75,6 +75,7 @@ mochify [OPTIONS] <FILES>...
 | `--crop` | Crop to exact dimensions (saliency-guided) |
 | `-r, --rotation <DEG>` | Rotation: `0`, `90`, `180`, `270` |
 | `-o, --output <DIR>` | Output directory (default: same as input) |
+| `-n, --name <NAME>` | Base name for the output file (without extension) |
 | `-p, --prompt <TEXT>` | Natural-language prompt — resolves all params automatically |
 | `-k, --api-key <KEY>` | API key override (or set `MOCHIFY_API_KEY` env var) |
 
@@ -96,6 +97,10 @@ mochify photo.jpg -p "optimise for eBay"
 mochify photo.jpg -p "remove background and convert to WebP"
 mochify photo.jpg -p "resize to 50%, strip EXIF, keep as WebP"
 
+# Custom output name
+mochify photo.jpg -t webp -n hero
+mochify product.jpg -p "optimise for Shopify" -n product-main
+
 # Pipe file paths from stdin
 find . -name "*.jpg" | mochify -t webp -o ./out
 cat images.txt | mochify -p "convert to avif 1200px wide" -o ./compressed
@@ -104,7 +109,9 @@ ls *.heic | mochify -t jpg
 
 ### Output file naming
 
-When the output format and directory match the input, the result is saved as `{name}_mochified.{ext}` so it's always clear something happened. If that file already exists (e.g. you run it twice), a numeric suffix is added: `{name}_mochified_1.{ext}`, `_2`, etc. When the format changes (e.g. `.jpg` → `.webp`), the extension change is already unambiguous so no suffix is added.
+By default, when the output format and directory match the input, the result is saved as `{name}_mochified.{ext}` so it's always clear something happened. If that file already exists, a numeric suffix is added (`_1`, `_2`, etc.). When the format changes (e.g. `.jpg` → `.webp`), the extension change is already unambiguous so no suffix is added.
+
+Use `-n, --name` to set an explicit base name: `mochify photo.jpg -t webp -n hero` saves `hero.webp`. The prompt path also supports this: `mochify *.jpg -p "optimise for Shopify, name them product"` will produce `product.webp`, `product_1.webp`, etc.
 
 ## MCP Server (Claude Desktop)
 

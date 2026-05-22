@@ -31,6 +31,9 @@ pub struct SquishInput {
 
     #[schemars(description = "Absolute output directory path on the user's local macOS filesystem. Defaults to same directory as input file.")]
     pub output_dir: Option<String>,
+
+    #[schemars(description = "Optional base name for the output file (without extension). When set, the output is saved as <name>.<format> instead of deriving the name from the input file.")]
+    pub output_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -70,6 +73,7 @@ impl MochifyMcp {
             crop: input.crop,
             rotation: input.rotation,
             out_name_suffix: None,
+            output_name: input.output_name,
         };
 
         match client.squish(&path, &params, &out_dir).await {

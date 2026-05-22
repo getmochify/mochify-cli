@@ -16,6 +16,8 @@ pub struct ProcessParams {
     pub rotation: Option<u32>,
     /// Suffix appended to the output filename stem for multi-variant jobs (e.g. "_500w_webp").
     pub out_name_suffix: Option<String>,
+    /// Explicit output base name (without extension). Overrides the input filename stem.
+    pub output_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +56,8 @@ struct PromptFileResult {
     crop: Option<bool>,
     #[serde(default)]
     rotate: u32,
+    #[serde(rename = "outputName")]
+    output_name: Option<String>,
     /// Multi-format: set when NLP returns more than one output format.
     types: Option<Vec<String>>,
     /// Multi-size: set when NLP returns more than one output size.
@@ -200,6 +204,7 @@ impl MochifyClient {
                         crop: file.crop,
                         rotation: (file.rotate != 0).then_some(file.rotate),
                         out_name_suffix,
+                        output_name: file.output_name.clone(),
                     });
                 }
             }
@@ -291,15 +296,25 @@ impl MochifyClient {
                 .unwrap_or("jpg"),
         );
 
+        // Resolve the base name: explicit output_name wins over input stem.
+        let base_name: String = match &params.output_name {
+            Some(name) => name
+                .chars()
+                .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\t'))
+                .collect::<String>()
+                .trim()
+                .to_string(),
+            None => stem.to_string(),
+        };
         // Multi-variant jobs carry an explicit suffix (e.g. "_500w_webp").
         // Single-variant jobs that would overwrite the input get _mochified instead.
         let candidate = out_dir.join(format!("{stem}.{ext}"));
         let base_stem = if let Some(ref suffix) = params.out_name_suffix {
-            format!("{stem}{suffix}")
-        } else if candidate == file_path {
+            format!("{base_name}{suffix}")
+        } else if params.output_name.is_none() && candidate == file_path {
             format!("{stem}_mochified")
         } else {
-            stem.to_string()
+            base_name
         };
 
         // Dedup: if the target already exists, increment until we find a free slot.

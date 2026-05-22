@@ -1,6 +1,6 @@
 [package]
 name = "mochify"
-version = "1.0.5"
+version = "1.1.0"
 edition = "2024"
 license = "MIT"
 description = "CLI and MCP server for privacy-first image compression and conversion via mochify.app"
