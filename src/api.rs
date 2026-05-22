@@ -18,6 +18,7 @@ pub struct ProcessParams {
     pub out_name_suffix: Option<String>,
     /// Explicit output base name (without extension). Overrides the input filename stem.
     pub output_name: Option<String>,
+    pub clarity: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -58,6 +59,7 @@ struct PromptFileResult {
     rotate: u32,
     #[serde(rename = "outputName")]
     output_name: Option<String>,
+    clarity: Option<bool>,
     /// Multi-format: set when NLP returns more than one output format.
     types: Option<Vec<String>>,
     /// Multi-size: set when NLP returns more than one output size.
@@ -205,6 +207,7 @@ impl MochifyClient {
                         rotation: (file.rotate != 0).then_some(file.rotate),
                         out_name_suffix,
                         output_name: file.output_name.clone(),
+                        clarity: file.clarity,
                     });
                 }
             }
@@ -248,6 +251,9 @@ impl MochifyClient {
         }
         if let Some(r) = params.rotation {
             query.push(("rotate", r.to_string()));
+        }
+        if params.clarity == Some(true) {
+            query.push(("clarity", "1".to_string()));
         }
 
         let mut req = self

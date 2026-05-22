@@ -34,6 +34,9 @@ pub struct SquishInput {
 
     #[schemars(description = "Optional base name for the output file (without extension). When set, the output is saved as <name>.<format> instead of deriving the name from the input file.")]
     pub output_name: Option<String>,
+
+    #[schemars(description = "Apply clarity — midtone contrast enhancement that makes images look crisper and more detailed without affecting overall exposure")]
+    pub clarity: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -74,6 +77,7 @@ impl MochifyMcp {
             rotation: input.rotation,
             out_name_suffix: None,
             output_name: input.output_name,
+            clarity: input.clarity,
         };
 
         match client.squish(&path, &params, &out_dir).await {

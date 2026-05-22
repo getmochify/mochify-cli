@@ -146,6 +146,7 @@ async fn process_files(args: Args) -> Result<()> {
         rotation: args.rotation,
         out_name_suffix: None,
         output_name: args.name,
+        clarity: if args.clarity { Some(true) } else { None },
     };
 
     // If a prompt was supplied, resolve params for all files in one request.
@@ -214,6 +215,7 @@ fn merge_params(base: ProcessParams, overrides: ProcessParams) -> ProcessParams 
         rotation: overrides.rotation.or(base.rotation),
         out_name_suffix: base.out_name_suffix, // always from NLP — explicit flags don't override naming
         output_name: overrides.output_name.or(base.output_name),
+        clarity: overrides.clarity.or(base.clarity),
     }
 }
 

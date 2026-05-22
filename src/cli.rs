@@ -38,6 +38,10 @@ pub struct Args {
     #[arg(short = 'n', long, value_name = "NAME")]
     pub name: Option<String>,
 
+    /// Apply clarity (midtone contrast enhancement)
+    #[arg(long)]
+    pub clarity: bool,
+
     /// Natural-language prompt — calls /v1/prompt to resolve params
     #[arg(short = 'p', long, value_name = "TEXT")]
     pub prompt: Option<String>,

@@ -76,6 +76,7 @@ mochify [OPTIONS] <FILES>...
 | `-r, --rotation <DEG>` | Rotation: `0`, `90`, `180`, `270` |
 | `-o, --output <DIR>` | Output directory (default: same as input) |
 | `-n, --name <NAME>` | Base name for the output file (without extension) |
+| `--clarity` | Apply clarity (midtone contrast enhancement — crisper, more detailed look) |
 | `-p, --prompt <TEXT>` | Natural-language prompt — resolves all params automatically |
 | `-k, --api-key <KEY>` | API key override (or set `MOCHIFY_API_KEY` env var) |
 
