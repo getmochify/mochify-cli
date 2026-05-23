@@ -81,7 +81,7 @@ impl MochifyMcp {
         };
 
         match client.squish(&path, &params, &out_dir).await {
-            Ok(out_path) => {
+            Ok((out_path, _meta)) => {
                 let usage_note = match client.get_usage().await {
                     Ok(u) => format!(" ({} requests remaining today)", u.remaining),
                     Err(_) => String::new(),

@@ -47,6 +47,16 @@ pub struct UsageInfo {
     pub available: bool,
 }
 
+#[derive(Debug, Default)]
+pub struct SquishMeta {
+    pub latency_ms: Option<String>,
+    pub optimized: bool,
+    pub reason: Option<String>,
+    pub quality: Option<String>,
+    pub saliency: Option<String>,
+    pub bg_removed: bool,
+}
+
 #[derive(Deserialize)]
 struct PromptFileResult {
     filename: String,
@@ -106,12 +116,12 @@ impl MochifyClient {
     }
 
     /// Resolve natural-language `prompt` into per-file `ProcessParams` by calling /v1/prompt.
-    /// Returns a map keyed by filename (basename only).
+    /// Returns a map keyed by filename (basename only), plus the raw response JSON for verbose output.
     pub async fn resolve_prompt(
         &self,
         prompt: &str,
         files: &[&Path],
-    ) -> Result<HashMap<String, Vec<ProcessParams>>> {
+    ) -> Result<(HashMap<String, Vec<ProcessParams>>, serde_json::Value)> {
         let mut file_data = Vec::new();
         for &path in files {
             let path_clone = path.to_path_buf();
@@ -161,8 +171,11 @@ impl MochifyClient {
             anyhow::bail!("API error {status}: {body}");
         }
 
+        let body_text = response.text().await.context("failed to read prompt response")?;
+        let raw_json: serde_json::Value =
+            serde_json::from_str(&body_text).context("failed to parse prompt response")?;
         let prompt_response: PromptResponse =
-            response.json().await.context("failed to parse prompt response")?;
+            serde_json::from_value(raw_json.clone()).context("failed to parse prompt response")?;
 
         let mut result: HashMap<String, Vec<ProcessParams>> = HashMap::new();
         for file in prompt_response.files {
@@ -213,7 +226,7 @@ impl MochifyClient {
             }
             result.insert(file.filename, variants);
         }
-        Ok(result)
+        Ok((result, raw_json))
     }
 
     pub async fn squish(
@@ -221,7 +234,7 @@ impl MochifyClient {
         file_path: &Path,
         params: &ProcessParams,
         out_dir: &Path,
-    ) -> Result<PathBuf> {
+    ) -> Result<(PathBuf, SquishMeta)> {
         let bytes = fs::read(file_path)
             .await
             .with_context(|| format!("failed to read {}", file_path.display()))?;
@@ -288,6 +301,18 @@ impl MochifyClient {
             anyhow::bail!("API error {status}: {body}");
         }
 
+        let hdr = |name: &str| -> Option<String> {
+            response.headers().get(name).and_then(|v| v.to_str().ok()).map(String::from)
+        };
+        let meta = SquishMeta {
+            latency_ms: hdr("x-latency-ms"),
+            optimized: hdr("x-mochify-optimized").map(|v| v == "true").unwrap_or(false),
+            reason: hdr("x-mochify-reason"),
+            quality: hdr("x-mochify-quality"),
+            saliency: hdr("x-mochify-saliency"),
+            bg_removed: hdr("x-mochify-bgremoved").map(|v| v == "true").unwrap_or(false),
+        };
+
         let image_bytes = response.bytes().await.context("failed to read response body")?;
 
         let stem = file_path
@@ -337,6 +362,6 @@ impl MochifyClient {
             .await
             .with_context(|| format!("failed to write {}", out_path.display()))?;
 
-        Ok(out_path)
+        Ok((out_path, meta))
     }
 }

@@ -4,7 +4,7 @@ mod credentials;
 mod mcp;
 
 use anyhow::Result;
-use api::{MochifyClient, ProcessParams};
+use api::{MochifyClient, ProcessParams, SquishMeta};
 use clap::Parser;
 use cli::{Args, AuthAction, Commands};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -153,8 +153,13 @@ async fn process_files(args: Args) -> Result<()> {
     let prompt_map = if let Some(ref prompt) = args.prompt {
         let sp = spinner("Parsing prompt...");
         let paths: Vec<&std::path::Path> = args.files.iter().map(|p| p.as_path()).collect();
-        let map = client.resolve_prompt(prompt, &paths).await?;
+        let (map, raw_json) = client.resolve_prompt(prompt, &paths).await?;
         sp.finish_and_clear();
+        print_prompt_summary(&args.files, &map);
+        if args.verbose {
+            eprintln!("Prompt response JSON:");
+            eprintln!("{}", serde_json::to_string_pretty(&raw_json).unwrap_or_default());
+        }
         Some(map)
     } else {
         None
@@ -189,9 +194,12 @@ async fn process_files(args: Args) -> Result<()> {
             };
             let sp = spinner(format!("Processing {label}..."));
             match client.squish(file_path, params, &out_dir).await {
-                Ok(out) => {
+                Ok((out, meta)) => {
                     sp.finish_and_clear();
                     println!("{}", out.display());
+                    if args.verbose {
+                        print_squish_meta(&meta);
+                    }
                 }
                 Err(e) => {
                     sp.finish_and_clear();
@@ -202,6 +210,55 @@ async fn process_files(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn format_params_summary(p: &ProcessParams) -> String {
+    let mut parts = Vec::new();
+    if let Some(ref fmt) = p.format { parts.push(fmt.clone()); }
+    match (p.width, p.height) {
+        (Some(w), Some(h)) => parts.push(format!("{w} × {h}")),
+        (Some(w), None) => parts.push(format!("{w}w")),
+        (None, Some(h)) => parts.push(format!("{h}h")),
+        _ => {}
+    }
+    if p.crop == Some(true) { parts.push("crop".into()); }
+    if p.rotation.map(|r| r != 0).unwrap_or(false) {
+        parts.push(format!("rotate {}°", p.rotation.unwrap()));
+    }
+    if p.clarity == Some(true) { parts.push("clarity".into()); }
+    if parts.is_empty() { "original settings".into() } else { parts.join(" · ") }
+}
+
+fn print_prompt_summary(files: &[PathBuf], map: &std::collections::HashMap<String, Vec<ProcessParams>>) {
+    eprintln!("Interpreted:");
+    for file_path in files {
+        let filename = file_path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        if let Some(variants) = map.get(filename) {
+            if variants.len() == 1 {
+                eprintln!("  {filename} → {}", format_params_summary(&variants[0]));
+            } else {
+                eprintln!("  {filename} →");
+                for v in variants {
+                    eprintln!("    {}", format_params_summary(v));
+                }
+            }
+        }
+    }
+}
+
+fn print_squish_meta(meta: &SquishMeta) {
+    let mut parts = Vec::new();
+    if let Some(ref ms) = meta.latency_ms { parts.push(format!("{ms}ms")); }
+    if meta.optimized {
+        parts.push("optimized".into());
+    } else {
+        parts.push("not optimized".into());
+        if let Some(ref r) = meta.reason { parts.push(format!("({r})")); }
+    }
+    if let Some(ref q) = meta.quality { parts.push(format!("quality {q}")); }
+    if let Some(ref s) = meta.saliency { parts.push(format!("saliency {s}")); }
+    if meta.bg_removed { parts.push("bg removed".into()); }
+    eprintln!("  ← {}", parts.join(" · "));
 }
 
 /// Merge prompt-derived `base` params with explicit CLI `overrides`.

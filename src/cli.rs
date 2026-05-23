@@ -49,6 +49,10 @@ pub struct Args {
     /// API key [env: MOCHIFY_API_KEY]
     #[arg(short = 'k', long, env = "MOCHIFY_API_KEY", value_name = "KEY")]
     pub api_key: Option<String>,
+
+    /// Print raw API responses and response headers (useful when exploring the API directly)
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
 }
 
 #[derive(Subcommand)]
