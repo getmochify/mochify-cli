@@ -34,6 +34,14 @@ chmod +x mochify
 sudo mv mochify /usr/local/bin/
 ```
 
+**Cargo (all platforms):**
+
+```bash
+cargo install mochify
+```
+
+Requires [Rust](https://rustup.rs). Easiest option on Linux/WSL if you already have the toolchain.
+
 **Manual:** All binaries at [Releases](https://github.com/getmochify/mochify-cli/releases).
 
 **From source:**

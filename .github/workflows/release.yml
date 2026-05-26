@@ -28,6 +28,9 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             artifact: mochify-linux-arm64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: mochify-windows-x86_64.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -50,8 +53,14 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename binary
+      - name: Rename binary (Unix)
+        if: runner.os != 'Windows'
         run: cp target/${{ matrix.target }}/release/mochify ${{ matrix.artifact }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item "target/${{ matrix.target }}/release/mochify.exe" "${{ matrix.artifact }}"
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
@@ -118,5 +127,55 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/mochify.rb
+          git commit -m "mochify ${{ steps.sha.outputs.version }}"
+          git push
+
+  scoop:
+    name: Update Scoop Manifest
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout scoop bucket
+        uses: actions/checkout@v4
+        with:
+          repository: getmochify/scoop-mochify
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+
+      - name: Compute SHA256 hash
+        id: sha
+        run: |
+          VERSION="${{ github.ref_name }}"
+          BASE="https://github.com/getmochify/mochify-cli/releases/download/${VERSION}"
+          WIN_SHA=$(curl -sL "${BASE}/mochify-windows-x86_64.exe" | sha256sum | awk '{print $1}')
+          echo "win_sha=${WIN_SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Write manifest
+        run: |
+          VERSION="${{ steps.sha.outputs.version }}"
+          WIN_SHA="${{ steps.sha.outputs.win_sha }}"
+          cat > mochify.json << EOF
+          {
+              "version": "${VERSION}",
+              "description": "CLI and MCP server for mochify.app — fast, privacy-first image compression",
+              "homepage": "https://mochify.app",
+              "license": "MIT",
+              "url": "https://github.com/getmochify/mochify-cli/releases/download/v${VERSION}/mochify-windows-x86_64.exe",
+              "hash": "${WIN_SHA}",
+              "bin": [["mochify-windows-x86_64.exe", "mochify"]],
+              "checkver": {
+                  "github": "https://github.com/getmochify/mochify-cli"
+              },
+              "autoupdate": {
+                  "url": "https://github.com/getmochify/mochify-cli/releases/download/v\$version/mochify-windows-x86_64.exe"
+              }
+          }
+          EOF
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add mochify.json
           git commit -m "mochify ${{ steps.sha.outputs.version }}"
           git push
