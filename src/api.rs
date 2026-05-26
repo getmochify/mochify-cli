@@ -140,6 +140,7 @@ impl MochifyClient {
             });
         }
 
+        let input_names: Vec<String> = file_data.iter().map(|f| f.name.clone()).collect();
         let body = PromptRequest { prompt, file_data };
         let mut req = self
             .client
@@ -178,7 +179,7 @@ impl MochifyClient {
             serde_json::from_value(raw_json.clone()).context("failed to parse prompt response")?;
 
         let mut result: HashMap<String, Vec<ProcessParams>> = HashMap::new();
-        for file in prompt_response.files {
+        for (i, file) in prompt_response.files.into_iter().enumerate() {
             let formats: Vec<String> = match &file.types {
                 Some(types) if types.len() > 1 => types.clone(),
                 _ => vec![file.format.clone().unwrap_or_else(|| "jpg".to_string())],
@@ -224,7 +225,10 @@ impl MochifyClient {
                     });
                 }
             }
-            result.insert(file.filename, variants);
+            // Key by the original input name (not the AI-returned filename) so that
+            // files with spaces are always found regardless of how Mistral echoes the name.
+            let key = input_names.get(i).cloned().unwrap_or(file.filename);
+            result.insert(key, variants);
         }
         Ok((result, raw_json))
     }
