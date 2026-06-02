@@ -42,6 +42,10 @@ pub struct Args {
     #[arg(long)]
     pub clarity: bool,
 
+    /// Remove the image background (AI foreground isolation)
+    #[arg(long = "remove-bg")]
+    pub remove_bg: bool,
+
     /// Natural-language prompt — calls /v1/prompt to resolve params
     #[arg(short = 'p', long, value_name = "TEXT")]
     pub prompt: Option<String>,

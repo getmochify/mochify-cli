@@ -37,6 +37,12 @@ pub struct SquishInput {
 
     #[schemars(description = "Apply clarity — midtone contrast enhancement that makes images look crisper and more detailed without affecting overall exposure")]
     pub clarity: Option<bool>,
+
+    #[schemars(description = "Remove the image background (AI foreground isolation). Pair with `background` to composite the cut-out subject onto a solid colour; omit `background` for a transparent result on PNG/WebP/AVIF/JXL.")]
+    pub remove_background: Option<bool>,
+
+    #[schemars(description = "Background colour when removing background. Omit for transparent (default for PNG/WebP/AVIF/JXL). Use \"white\", \"black\", or a hex value like \"#ff0000\". JPEG always composites (default white).")]
+    pub background: Option<String>,
 }
 
 #[derive(Clone)]
@@ -78,6 +84,8 @@ impl MochifyMcp {
             out_name_suffix: None,
             output_name: input.output_name,
             clarity: input.clarity,
+            remove_background: input.remove_background,
+            background: input.background,
         };
 
         match client.squish(&path, &params, &out_dir).await {

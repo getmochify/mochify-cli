@@ -19,6 +19,8 @@ pub struct ProcessParams {
     /// Explicit output base name (without extension). Overrides the input filename stem.
     pub output_name: Option<String>,
     pub clarity: Option<bool>,
+    pub remove_background: Option<bool>,
+    pub background: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -70,6 +72,10 @@ struct PromptFileResult {
     #[serde(rename = "outputName")]
     output_name: Option<String>,
     clarity: Option<bool>,
+    #[serde(rename = "removeBackground")]
+    remove_background: Option<bool>,
+    /// Composite background colour (e.g. "white", "#ff0000") when the prompt specifies one.
+    background: Option<String>,
     /// Multi-format: set when NLP returns more than one output format.
     types: Option<Vec<String>>,
     /// Multi-size: set when NLP returns more than one output size.
@@ -97,7 +103,7 @@ impl MochifyClient {
     pub async fn get_usage(&self) -> Result<UsageInfo> {
         let mut req = self.client.get(format!("{BASE_URL}/v1/checkTokens"));
         if let Some(ref key) = self.api_key {
-            req = req.header("x-api-key", key.as_str());
+            req = req.bearer_auth(key);
         }
         let response = req.send().await.context("usage request failed")?;
         let status = response.status();
@@ -148,7 +154,7 @@ impl MochifyClient {
             .json(&body);
 
         if let Some(ref key) = self.api_key {
-            req = req.header("X-Api-Key", key.as_str());
+            req = req.bearer_auth(key);
         }
 
         let response = req.send().await.context("prompt request failed")?;
@@ -180,51 +186,7 @@ impl MochifyClient {
 
         let mut result: HashMap<String, Vec<ProcessParams>> = HashMap::new();
         for (i, file) in prompt_response.files.into_iter().enumerate() {
-            let formats: Vec<String> = match &file.types {
-                Some(types) if types.len() > 1 => types.clone(),
-                _ => vec![file.format.clone().unwrap_or_else(|| "jpg".to_string())],
-            };
-            let sizes: Vec<(Option<u32>, Option<u32>)> = match &file.sizes {
-                Some(sizes) if sizes.len() > 1 => {
-                    sizes.iter().map(|s| (Some(s.width), Some(s.height))).collect()
-                }
-                _ => vec![(file.width, file.height)],
-            };
-
-            let multi_format = formats.len() > 1;
-            let multi_size = sizes.len() > 1;
-
-            let mut variants = Vec::new();
-            for (w, h) in &sizes {
-                for fmt in &formats {
-                    let size_suffix = if multi_size {
-                        match (w.filter(|&v| v > 0), h.filter(|&v| v > 0)) {
-                            (Some(w), Some(h)) => format!("_{w}x{h}"),
-                            (Some(w), _) => format!("_{w}w"),
-                            (_, Some(h)) => format!("_{h}h"),
-                            _ => String::new(),
-                        }
-                    } else {
-                        String::new()
-                    };
-                    let fmt_suffix = if multi_format { format!("_{fmt}") } else { String::new() };
-                    let out_name_suffix = if multi_format || multi_size {
-                        Some(format!("{size_suffix}{fmt_suffix}"))
-                    } else {
-                        None
-                    };
-                    variants.push(ProcessParams {
-                        format: Some(fmt.clone()),
-                        width: *w,
-                        height: *h,
-                        crop: file.crop,
-                        rotation: (file.rotate != 0).then_some(file.rotate),
-                        out_name_suffix,
-                        output_name: file.output_name.clone(),
-                        clarity: file.clarity,
-                    });
-                }
-            }
+            let variants = expand_file_variants(&file);
             // Key by the original input name (not the AI-returned filename) so that
             // files with spaces are always found regardless of how Mistral echoes the name.
             let key = input_names.get(i).cloned().unwrap_or(file.filename);
@@ -253,25 +215,7 @@ impl MochifyClient {
             _ => "application/octet-stream",
         };
 
-        let mut query: Vec<(&str, String)> = Vec::new();
-        if let Some(ref fmt) = params.format {
-            query.push(("type", fmt.clone()));
-        }
-        if let Some(w) = params.width {
-            query.push(("width", w.to_string()));
-        }
-        if let Some(h) = params.height {
-            query.push(("height", h.to_string()));
-        }
-        if let Some(c) = params.crop {
-            query.push(("crop", c.to_string()));
-        }
-        if let Some(r) = params.rotation {
-            query.push(("rotate", r.to_string()));
-        }
-        if params.clarity == Some(true) {
-            query.push(("clarity", "1".to_string()));
-        }
+        let query = build_squish_query(params);
 
         let mut req = self
             .client
@@ -281,7 +225,7 @@ impl MochifyClient {
             .body(bytes);
 
         if let Some(ref key) = self.api_key {
-            req = req.header("x-api-key", key.as_str());
+            req = req.bearer_auth(key);
         }
 
         let response = req.send().await.context("request failed")?;
@@ -333,12 +277,7 @@ impl MochifyClient {
 
         // Resolve the base name: explicit output_name wins over input stem.
         let base_name: String = match &params.output_name {
-            Some(name) => name
-                .chars()
-                .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\t'))
-                .collect::<String>()
-                .trim()
-                .to_string(),
+            Some(name) => sanitize_output_name(name),
             None => stem.to_string(),
         };
         // Multi-variant jobs carry an explicit suffix (e.g. "_500w_webp").
@@ -367,5 +306,245 @@ impl MochifyClient {
             .with_context(|| format!("failed to write {}", out_path.display()))?;
 
         Ok((out_path, meta))
+    }
+}
+
+/// Expand a single NLP file result into one `ProcessParams` per (size × format) variant.
+/// Jobs with more than one format or size get an output-name suffix (`_500w`, `_1000x1000`,
+/// `_webp`, or a combination); single-variant jobs carry no suffix.
+fn expand_file_variants(file: &PromptFileResult) -> Vec<ProcessParams> {
+    let formats: Vec<String> = match &file.types {
+        Some(types) if types.len() > 1 => types.clone(),
+        _ => vec![file.format.clone().unwrap_or_else(|| "jpg".to_string())],
+    };
+    let sizes: Vec<(Option<u32>, Option<u32>)> = match &file.sizes {
+        Some(sizes) if sizes.len() > 1 => {
+            sizes.iter().map(|s| (Some(s.width), Some(s.height))).collect()
+        }
+        _ => vec![(file.width, file.height)],
+    };
+
+    let multi_format = formats.len() > 1;
+    let multi_size = sizes.len() > 1;
+
+    let mut variants = Vec::new();
+    for (w, h) in &sizes {
+        for fmt in &formats {
+            let size_suffix = if multi_size {
+                match (w.filter(|&v| v > 0), h.filter(|&v| v > 0)) {
+                    (Some(w), Some(h)) => format!("_{w}x{h}"),
+                    (Some(w), _) => format!("_{w}w"),
+                    (_, Some(h)) => format!("_{h}h"),
+                    _ => String::new(),
+                }
+            } else {
+                String::new()
+            };
+            let fmt_suffix = if multi_format { format!("_{fmt}") } else { String::new() };
+            let out_name_suffix = if multi_format || multi_size {
+                Some(format!("{size_suffix}{fmt_suffix}"))
+            } else {
+                None
+            };
+            variants.push(ProcessParams {
+                format: Some(fmt.clone()),
+                width: *w,
+                height: *h,
+                crop: file.crop,
+                rotation: (file.rotate != 0).then_some(file.rotate),
+                out_name_suffix,
+                output_name: file.output_name.clone(),
+                clarity: file.clarity,
+                remove_background: file.remove_background,
+                background: file.background.clone(),
+            });
+        }
+    }
+    variants
+}
+
+/// Build the `/v1/squish` query from resolved params. Zero-valued width/height are dropped —
+/// the NLP can echo 0 to mean "unspecified", and forwarding it would resize to nothing.
+fn build_squish_query(params: &ProcessParams) -> Vec<(&'static str, String)> {
+    let mut query: Vec<(&'static str, String)> = Vec::new();
+    if let Some(ref fmt) = params.format {
+        query.push(("type", fmt.clone()));
+    }
+    if let Some(w) = params.width.filter(|&w| w > 0) {
+        query.push(("width", w.to_string()));
+    }
+    if let Some(h) = params.height.filter(|&h| h > 0) {
+        query.push(("height", h.to_string()));
+    }
+    if let Some(c) = params.crop {
+        query.push(("crop", c.to_string()));
+    }
+    if let Some(r) = params.rotation {
+        query.push(("rotate", r.to_string()));
+    }
+    if params.clarity == Some(true) {
+        query.push(("clarity", "1".to_string()));
+    }
+    if params.remove_background == Some(true) {
+        query.push(("removeBackground", "1".to_string()));
+    }
+    if let Some(ref bg) = params.background {
+        query.push(("background", bg.clone()));
+    }
+    query
+}
+
+/// Strip characters invalid in filenames and trim surrounding whitespace.
+fn sanitize_output_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\t'))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_result() -> PromptFileResult {
+        PromptFileResult {
+            filename: "photo.jpg".into(),
+            format: Some("webp".into()),
+            width: Some(800),
+            height: None,
+            crop: None,
+            rotate: 0,
+            output_name: None,
+            clarity: None,
+            remove_background: None,
+            background: None,
+            types: None,
+            sizes: None,
+        }
+    }
+
+    #[test]
+    fn single_variant_has_no_suffix() {
+        let v = expand_file_variants(&sample_result());
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].format.as_deref(), Some("webp"));
+        assert_eq!(v[0].width, Some(800));
+        assert_eq!(v[0].out_name_suffix, None);
+    }
+
+    #[test]
+    fn multi_format_suffixes_each_variant() {
+        let mut f = sample_result();
+        f.types = Some(vec!["webp".into(), "avif".into()]);
+        let v = expand_file_variants(&f);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].out_name_suffix.as_deref(), Some("_webp"));
+        assert_eq!(v[1].out_name_suffix.as_deref(), Some("_avif"));
+    }
+
+    #[test]
+    fn multi_size_uses_dimension_suffix() {
+        let mut f = sample_result();
+        f.sizes = Some(vec![
+            SizeEntry { width: 500, height: 0 },
+            SizeEntry { width: 1000, height: 1000 },
+        ]);
+        let v = expand_file_variants(&f);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].out_name_suffix.as_deref(), Some("_500w"));
+        assert_eq!(v[1].out_name_suffix.as_deref(), Some("_1000x1000"));
+    }
+
+    #[test]
+    fn multi_size_and_format_combine_suffixes() {
+        let mut f = sample_result();
+        f.types = Some(vec!["webp".into(), "avif".into()]);
+        f.sizes = Some(vec![
+            SizeEntry { width: 500, height: 0 },
+            SizeEntry { width: 1000, height: 0 },
+        ]);
+        let v = expand_file_variants(&f);
+        assert_eq!(v.len(), 4); // 2 sizes × 2 formats
+        assert_eq!(v[0].out_name_suffix.as_deref(), Some("_500w_webp"));
+        assert_eq!(v[1].out_name_suffix.as_deref(), Some("_500w_avif"));
+        assert_eq!(v[2].out_name_suffix.as_deref(), Some("_1000w_webp"));
+        assert_eq!(v[3].out_name_suffix.as_deref(), Some("_1000w_avif"));
+    }
+
+    #[test]
+    fn rotate_zero_is_omitted_nonzero_kept() {
+        assert_eq!(expand_file_variants(&sample_result())[0].rotation, None);
+        let mut f = sample_result();
+        f.rotate = 90;
+        assert_eq!(expand_file_variants(&f)[0].rotation, Some(90));
+    }
+
+    #[test]
+    fn propagates_remove_background_and_background() {
+        let mut f = sample_result();
+        f.remove_background = Some(true);
+        f.background = Some("white".into());
+        let v = expand_file_variants(&f);
+        assert_eq!(v[0].remove_background, Some(true));
+        assert_eq!(v[0].background.as_deref(), Some("white"));
+    }
+
+    #[test]
+    fn default_format_is_jpg_when_missing() {
+        let mut f = sample_result();
+        f.format = None;
+        assert_eq!(expand_file_variants(&f)[0].format.as_deref(), Some("jpg"));
+    }
+
+    #[test]
+    fn deserializes_remove_background_camelcase() {
+        let json = r##"{"files":[{"filename":"a.jpg","type":"webp","width":800,"height":600,"removeBackground":true,"background":"#ffffff"}]}"##;
+        let parsed: PromptResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.files[0].remove_background, Some(true));
+        assert_eq!(parsed.files[0].background.as_deref(), Some("#ffffff"));
+    }
+
+    #[test]
+    fn build_query_drops_zero_dimensions() {
+        let params = ProcessParams {
+            format: Some("webp".into()),
+            width: Some(0),
+            height: Some(0),
+            ..Default::default()
+        };
+        let q = build_squish_query(&params);
+        assert!(q.iter().any(|(k, v)| *k == "type" && v == "webp"));
+        assert!(!q.iter().any(|(k, _)| *k == "width"));
+        assert!(!q.iter().any(|(k, _)| *k == "height"));
+    }
+
+    #[test]
+    fn build_query_includes_all_flags() {
+        let params = ProcessParams {
+            format: Some("png".into()),
+            width: Some(1200),
+            crop: Some(true),
+            rotation: Some(90),
+            clarity: Some(true),
+            remove_background: Some(true),
+            background: Some("white".into()),
+            ..Default::default()
+        };
+        let q = build_squish_query(&params);
+        let has = |key: &str, val: &str| q.iter().any(|(k, v)| *k == key && v == val);
+        assert!(has("width", "1200"));
+        assert!(has("crop", "true"));
+        assert!(has("rotate", "90"));
+        assert!(has("clarity", "1"));
+        assert!(has("removeBackground", "1"));
+        assert!(has("background", "white"));
+    }
+
+    #[test]
+    fn sanitize_strips_invalid_chars_and_trims() {
+        assert_eq!(sanitize_output_name("  hero/image:final  "), "heroimagefinal");
+        assert_eq!(sanitize_output_name("logo*?\"<>|"), "logo");
+        assert_eq!(sanitize_output_name("clean-name_1"), "clean-name_1");
     }
 }

@@ -56,7 +56,7 @@ src/
 ### Key design decisions
 
 - **Single tool in MCP mode** — the MCP client (e.g. Claude) handles natural-language interpretation and maps prompts to structured `squish` tool parameters. No NLP layer needed in the CLI.
-- **Auth is optional** — without `--api-key` / `MOCHIFY_API_KEY`, requests go through on the free tier (25/day). The key is sent as `Authorization: Bearer <key>`.
+- **Auth is optional** — without `--api-key` / `MOCHIFY_API_KEY`, requests go through on the free tier (25/month; unauthenticated IPs get 3/month). The key is sent as `Authorization: Bearer <key>`.
 - **rmcp macros pattern** — tools use `#[tool_router]` on the impl block + `#[tool_handler]` on `impl ServerHandler`. The struct must have a `tool_router: ToolRouter<Self>` field initialized via `Self::tool_router()`.
 
 ### API wire format

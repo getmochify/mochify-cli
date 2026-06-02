@@ -24,10 +24,8 @@ pub fn save(api_key: &str) -> Result<()> {
 }
 
 pub fn clear() -> Result<()> {
-    if let Some(p) = path() {
-        if p.exists() {
-            std::fs::remove_file(&p).context("failed to remove credentials")?;
-        }
+    if let Some(p) = path().filter(|p| p.exists()) {
+        std::fs::remove_file(&p).context("failed to remove credentials")?;
     }
     Ok(())
 }

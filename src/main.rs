@@ -3,7 +3,7 @@ mod cli;
 mod credentials;
 mod mcp;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use api::{MochifyClient, ProcessParams, SquishMeta};
 use clap::Parser;
 use cli::{Args, AuthAction, Commands};
@@ -105,11 +105,13 @@ async fn auth_login() -> Result<()> {
                     #[serde(rename = "apiKey")]
                     api_key: String,
                 }
-                if let Ok(body) = response.json::<PollResponse>().await {
-                    sp.finish_and_clear();
-                    credentials::save(&body.api_key)?;
-                    println!("Authenticated! Credentials saved to ~/.config/mochify/credentials.toml");
-                }
+                sp.finish_and_clear();
+                let body = response
+                    .json::<PollResponse>()
+                    .await
+                    .context("authorization succeeded but the response could not be parsed")?;
+                credentials::save(&body.api_key)?;
+                println!("Authenticated! Credentials saved to ~/.config/mochify/credentials.toml");
                 return Ok(());
             }
             _ => continue,
@@ -147,6 +149,8 @@ async fn process_files(args: Args) -> Result<()> {
         out_name_suffix: None,
         output_name: args.name,
         clarity: if args.clarity { Some(true) } else { None },
+        remove_background: if args.remove_bg { Some(true) } else { None },
+        background: None,
     };
 
     // If a prompt was supplied, resolve params for all files in one request.
@@ -226,6 +230,8 @@ fn format_params_summary(p: &ProcessParams) -> String {
         parts.push(format!("rotate {}°", p.rotation.unwrap()));
     }
     if p.clarity == Some(true) { parts.push("clarity".into()); }
+    if p.remove_background == Some(true) { parts.push("remove bg".into()); }
+    if let Some(ref bg) = p.background { parts.push(format!("bg {bg}")); }
     if parts.is_empty() { "original settings".into() } else { parts.join(" · ") }
 }
 
@@ -273,6 +279,8 @@ fn merge_params(base: ProcessParams, overrides: ProcessParams) -> ProcessParams 
         out_name_suffix: base.out_name_suffix, // always from NLP — explicit flags don't override naming
         output_name: overrides.output_name.or(base.output_name),
         clarity: overrides.clarity.or(base.clarity),
+        remove_background: overrides.remove_background.or(base.remove_background),
+        background: overrides.background.or(base.background),
     }
 }
 
@@ -297,4 +305,60 @@ async fn run_mcp_server(api_key: Option<String>) -> Result<()> {
         .await?;
     server.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_params_summary, merge_params};
+    use crate::api::ProcessParams;
+
+    #[test]
+    fn explicit_override_wins_unset_falls_back_to_prompt() {
+        let base = ProcessParams {
+            format: Some("jpg".into()),
+            width: Some(800),
+            ..Default::default()
+        };
+        let overrides = ProcessParams {
+            format: Some("avif".into()),
+            ..Default::default()
+        };
+        let merged = merge_params(base, overrides);
+        assert_eq!(merged.format.as_deref(), Some("avif")); // explicit flag wins
+        assert_eq!(merged.width, Some(800)); // unset → prompt value
+    }
+
+    #[test]
+    fn out_name_suffix_always_comes_from_prompt() {
+        let base = ProcessParams {
+            out_name_suffix: Some("_500w".into()),
+            ..Default::default()
+        };
+        let overrides = ProcessParams {
+            out_name_suffix: Some("_ignored".into()),
+            ..Default::default()
+        };
+        let merged = merge_params(base, overrides);
+        assert_eq!(merged.out_name_suffix.as_deref(), Some("_500w"));
+    }
+
+    #[test]
+    fn summary_lists_set_params() {
+        let p = ProcessParams {
+            format: Some("webp".into()),
+            width: Some(1200),
+            height: Some(800),
+            remove_background: Some(true),
+            ..Default::default()
+        };
+        let s = format_params_summary(&p);
+        assert!(s.contains("webp"));
+        assert!(s.contains("1200 × 800"));
+        assert!(s.contains("remove bg"));
+    }
+
+    #[test]
+    fn summary_of_empty_params_is_original_settings() {
+        assert_eq!(format_params_summary(&ProcessParams::default()), "original settings");
+    }
 }
