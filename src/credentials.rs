@@ -13,13 +13,18 @@ fn path() -> Option<PathBuf> {
 
 pub fn load() -> Option<String> {
     let content = std::fs::read_to_string(path()?).ok()?;
-    toml::from_str::<Credentials>(&content).ok().map(|c| c.api_key)
+    toml::from_str::<Credentials>(&content)
+        .ok()
+        .map(|c| c.api_key)
 }
 
 pub fn save(api_key: &str) -> Result<()> {
     let p = path().context("could not determine config directory")?;
     std::fs::create_dir_all(p.parent().unwrap()).context("failed to create config directory")?;
-    let content = toml::to_string(&Credentials { api_key: api_key.to_owned() }).unwrap();
+    let content = toml::to_string(&Credentials {
+        api_key: api_key.to_owned(),
+    })
+    .unwrap();
     std::fs::write(&p, content).context("failed to write credentials")
 }
 

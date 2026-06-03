@@ -23,10 +23,47 @@ pub struct ProcessParams {
     pub background: Option<String>,
 }
 
+/// Parameters for a `/v1/pdf` request. `op` is "split" (one PDF per page) or
+/// "rasterize" (render pages to images); `format`/`dpi`/`quality` apply to rasterize only.
+#[derive(Debug, Clone)]
+pub struct PdfParams {
+    pub op: String,
+    pub format: Option<String>,
+    pub dpi: Option<u32>,
+    pub quality: Option<u32>,
+}
+
 #[derive(Deserialize)]
 struct SizeEntry {
     width: u32,
     height: u32,
+}
+
+#[derive(Serialize)]
+struct PdfPromptFileData {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct PdfPromptRequest<'a> {
+    prompt: &'a str,
+    #[serde(rename = "fileData")]
+    file_data: Vec<PdfPromptFileData>,
+    mode: &'a str,
+}
+
+#[derive(Deserialize)]
+struct PdfPromptResult {
+    op: String,
+    #[serde(rename = "type")]
+    format: Option<String>,
+    dpi: Option<u32>,
+    quality: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct PdfPromptResponse {
+    pdf: PdfPromptResult,
 }
 
 #[derive(Serialize)]
@@ -108,7 +145,9 @@ impl MochifyClient {
         let response = req.send().await.context("usage request failed")?;
         let status = response.status();
         if !status.is_success() {
-            if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+            {
                 anyhow::bail!(
                     "Usage tracking requires an API key. \
                      Set MOCHIFY_API_KEY or pass --api-key. \
@@ -118,7 +157,10 @@ impl MochifyClient {
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("API error {status}: {body}");
         }
-        response.json().await.context("failed to parse usage response")
+        response
+            .json()
+            .await
+            .context("failed to parse usage response")
     }
 
     /// Resolve natural-language `prompt` into per-file `ProcessParams` by calling /v1/prompt.
@@ -133,7 +175,9 @@ impl MochifyClient {
             let path_clone = path.to_path_buf();
             let size = tokio::task::spawn_blocking(move || imagesize::size(&path_clone))
                 .await?
-                .with_context(|| format!("failed to read image dimensions for {}", path.display()))?;
+                .with_context(|| {
+                    format!("failed to read image dimensions for {}", path.display())
+                })?;
             let name = path
                 .file_name()
                 .context("invalid filename")?
@@ -162,23 +206,16 @@ impl MochifyClient {
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                if self.api_key.is_none() {
-                    anyhow::bail!(
-                        "Rate limit exceeded. Unauthenticated requests are limited to 3/month per IP. \
-                         Sign up at https://mochify.app to get 25 free requests/month."
-                    );
-                } else {
-                    anyhow::bail!(
-                        "Rate limit exceeded. You've hit your plan's monthly limit. \
-                         Upgrade at https://mochify.app for higher limits (Seller: 300/month, Pro: 1200/month)."
-                    );
-                }
+                return Err(rate_limit_error(self.api_key.is_some()));
             }
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("API error {status}: {body}");
         }
 
-        let body_text = response.text().await.context("failed to read prompt response")?;
+        let body_text = response
+            .text()
+            .await
+            .context("failed to read prompt response")?;
         let raw_json: serde_json::Value =
             serde_json::from_str(&body_text).context("failed to parse prompt response")?;
         let prompt_response: PromptResponse =
@@ -233,35 +270,36 @@ impl MochifyClient {
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                if self.api_key.is_none() {
-                    anyhow::bail!(
-                        "Rate limit exceeded. Unauthenticated requests are limited to 3/month per IP. \
-                         Sign up at https://mochify.app to get 25 free requests/month."
-                    );
-                } else {
-                    anyhow::bail!(
-                        "Rate limit exceeded. You've hit your plan's monthly limit. \
-                         Upgrade at https://mochify.app for higher limits (Seller: 300/month, Pro: 1200/month)."
-                    );
-                }
+                return Err(rate_limit_error(self.api_key.is_some()));
             }
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("API error {status}: {body}");
         }
 
         let hdr = |name: &str| -> Option<String> {
-            response.headers().get(name).and_then(|v| v.to_str().ok()).map(String::from)
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(String::from)
         };
         let meta = SquishMeta {
             latency_ms: hdr("x-latency-ms"),
-            optimized: hdr("x-mochify-optimized").map(|v| v == "true").unwrap_or(false),
+            optimized: hdr("x-mochify-optimized")
+                .map(|v| v == "true")
+                .unwrap_or(false),
             reason: hdr("x-mochify-reason"),
             quality: hdr("x-mochify-quality"),
             saliency: hdr("x-mochify-saliency"),
-            bg_removed: hdr("x-mochify-bgremoved").map(|v| v == "true").unwrap_or(false),
+            bg_removed: hdr("x-mochify-bgremoved")
+                .map(|v| v == "true")
+                .unwrap_or(false),
         };
 
-        let image_bytes = response.bytes().await.context("failed to read response body")?;
+        let image_bytes = response
+            .bytes()
+            .await
+            .context("failed to read response body")?;
 
         let stem = file_path
             .file_stem()
@@ -307,6 +345,166 @@ impl MochifyClient {
 
         Ok((out_path, meta))
     }
+
+    /// Resolve a natural-language `prompt` into a `PdfParams` by calling /v1/prompt
+    /// with `mode: "pdf"`. The NLP returns a single operation applied to every file
+    /// (mirrors the frontend, which sends only filenames for PDFs). Returns the raw
+    /// response JSON alongside, for verbose output.
+    pub async fn resolve_pdf_prompt(
+        &self,
+        prompt: &str,
+        files: &[&Path],
+    ) -> Result<(PdfParams, serde_json::Value)> {
+        let file_data = files
+            .iter()
+            .map(|p| PdfPromptFileData {
+                name: p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            })
+            .collect();
+
+        let body = PdfPromptRequest {
+            prompt,
+            file_data,
+            mode: "pdf",
+        };
+        let mut req = self
+            .client
+            .post(format!("{WORKER_URL}/v1/prompt"))
+            .json(&body);
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let response = req.send().await.context("prompt request failed")?;
+        let status = response.status();
+        if !status.is_success() {
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(rate_limit_error(self.api_key.is_some()));
+            }
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("API error {status}: {body}");
+        }
+
+        let body_text = response
+            .text()
+            .await
+            .context("failed to read prompt response")?;
+        let raw_json: serde_json::Value =
+            serde_json::from_str(&body_text).context("failed to parse prompt response")?;
+        let parsed: PdfPromptResponse = serde_json::from_value(raw_json.clone())
+            .context("prompt did not resolve to a PDF operation")?;
+
+        Ok((
+            PdfParams {
+                op: parsed.pdf.op,
+                format: parsed.pdf.format,
+                dpi: parsed.pdf.dpi,
+                quality: parsed.pdf.quality,
+            },
+            raw_json,
+        ))
+    }
+
+    /// POST a PDF to /v1/pdf and save the returned zip (split → page PDFs,
+    /// rasterize → page images) to `out_dir`. Returns the written zip path.
+    pub async fn pdf(
+        &self,
+        file_path: &Path,
+        params: &PdfParams,
+        out_dir: &Path,
+    ) -> Result<PathBuf> {
+        let bytes = fs::read(file_path)
+            .await
+            .with_context(|| format!("failed to read {}", file_path.display()))?;
+
+        let query = build_pdf_query(params);
+
+        let mut req = self
+            .client
+            .post(format!("{BASE_URL}/v1/pdf"))
+            .query(&query)
+            .header("Content-Type", "application/pdf")
+            .body(bytes);
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let response = req.send().await.context("request failed")?;
+        let status = response.status();
+        if !status.is_success() {
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(rate_limit_error(self.api_key.is_some()));
+            }
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("API error {status}: {body}");
+        }
+
+        let zip_bytes = response
+            .bytes()
+            .await
+            .context("failed to read response body")?;
+
+        let stem = file_path
+            .file_stem()
+            .context("invalid file stem")?
+            .to_string_lossy();
+        let label = if params.op == "split" {
+            "pages"
+        } else {
+            "rasterized"
+        };
+
+        // Dedup: if the target already exists, increment until we find a free slot.
+        let mut out_path = out_dir.join(format!("{stem}_{label}.zip"));
+        if out_path.exists() {
+            let mut n = 1u32;
+            while out_path.exists() {
+                out_path = out_dir.join(format!("{stem}_{label}_{n}.zip"));
+                n += 1;
+            }
+        }
+
+        fs::write(&out_path, &zip_bytes)
+            .await
+            .with_context(|| format!("failed to write {}", out_path.display()))?;
+
+        Ok(out_path)
+    }
+}
+
+/// Map a non-success rate-limit status to a helpful, plan-aware error.
+fn rate_limit_error(has_key: bool) -> anyhow::Error {
+    if has_key {
+        anyhow::anyhow!(
+            "Rate limit exceeded. You've hit your plan's monthly limit. \
+             Upgrade at https://mochify.app for higher limits (Seller: 300/month, Pro: 1200/month)."
+        )
+    } else {
+        anyhow::anyhow!(
+            "Rate limit exceeded. Unauthenticated requests are limited to 3/month per IP. \
+             Sign up at https://mochify.app to get 25 free requests/month."
+        )
+    }
+}
+
+/// Build the `/v1/pdf` query. `type`/`dpi`/`quality` only apply to rasterize.
+fn build_pdf_query(params: &PdfParams) -> Vec<(&'static str, String)> {
+    let mut query: Vec<(&'static str, String)> = vec![("op", params.op.clone())];
+    if params.op == "rasterize" {
+        if let Some(ref t) = params.format {
+            query.push(("type", t.clone()));
+        }
+        if let Some(dpi) = params.dpi {
+            query.push(("dpi", dpi.to_string()));
+        }
+        if let Some(q) = params.quality {
+            query.push(("quality", q.to_string()));
+        }
+    }
+    query
 }
 
 /// Expand a single NLP file result into one `ProcessParams` per (size × format) variant.
@@ -318,9 +516,10 @@ fn expand_file_variants(file: &PromptFileResult) -> Vec<ProcessParams> {
         _ => vec![file.format.clone().unwrap_or_else(|| "jpg".to_string())],
     };
     let sizes: Vec<(Option<u32>, Option<u32>)> = match &file.sizes {
-        Some(sizes) if sizes.len() > 1 => {
-            sizes.iter().map(|s| (Some(s.width), Some(s.height))).collect()
-        }
+        Some(sizes) if sizes.len() > 1 => sizes
+            .iter()
+            .map(|s| (Some(s.width), Some(s.height)))
+            .collect(),
         _ => vec![(file.width, file.height)],
     };
 
@@ -340,7 +539,11 @@ fn expand_file_variants(file: &PromptFileResult) -> Vec<ProcessParams> {
             } else {
                 String::new()
             };
-            let fmt_suffix = if multi_format { format!("_{fmt}") } else { String::new() };
+            let fmt_suffix = if multi_format {
+                format!("_{fmt}")
+            } else {
+                String::new()
+            };
             let out_name_suffix = if multi_format || multi_size {
                 Some(format!("{size_suffix}{fmt_suffix}"))
             } else {
@@ -397,7 +600,12 @@ fn build_squish_query(params: &ProcessParams) -> Vec<(&'static str, String)> {
 /// Strip characters invalid in filenames and trim surrounding whitespace.
 fn sanitize_output_name(name: &str) -> String {
     name.chars()
-        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\t'))
+        .filter(|c| {
+            !matches!(
+                c,
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\t'
+            )
+        })
         .collect::<String>()
         .trim()
         .to_string()
@@ -447,8 +655,14 @@ mod tests {
     fn multi_size_uses_dimension_suffix() {
         let mut f = sample_result();
         f.sizes = Some(vec![
-            SizeEntry { width: 500, height: 0 },
-            SizeEntry { width: 1000, height: 1000 },
+            SizeEntry {
+                width: 500,
+                height: 0,
+            },
+            SizeEntry {
+                width: 1000,
+                height: 1000,
+            },
         ]);
         let v = expand_file_variants(&f);
         assert_eq!(v.len(), 2);
@@ -461,8 +675,14 @@ mod tests {
         let mut f = sample_result();
         f.types = Some(vec!["webp".into(), "avif".into()]);
         f.sizes = Some(vec![
-            SizeEntry { width: 500, height: 0 },
-            SizeEntry { width: 1000, height: 0 },
+            SizeEntry {
+                width: 500,
+                height: 0,
+            },
+            SizeEntry {
+                width: 1000,
+                height: 0,
+            },
         ]);
         let v = expand_file_variants(&f);
         assert_eq!(v.len(), 4); // 2 sizes × 2 formats
@@ -543,8 +763,48 @@ mod tests {
 
     #[test]
     fn sanitize_strips_invalid_chars_and_trims() {
-        assert_eq!(sanitize_output_name("  hero/image:final  "), "heroimagefinal");
+        assert_eq!(
+            sanitize_output_name("  hero/image:final  "),
+            "heroimagefinal"
+        );
         assert_eq!(sanitize_output_name("logo*?\"<>|"), "logo");
         assert_eq!(sanitize_output_name("clean-name_1"), "clean-name_1");
+    }
+
+    #[test]
+    fn pdf_split_query_is_op_only() {
+        let params = PdfParams {
+            op: "split".into(),
+            format: Some("png".into()),
+            dpi: Some(150),
+            quality: Some(90),
+        };
+        let q = build_pdf_query(&params);
+        assert_eq!(q, vec![("op", "split".to_string())]);
+    }
+
+    #[test]
+    fn pdf_rasterize_query_includes_render_params() {
+        let params = PdfParams {
+            op: "rasterize".into(),
+            format: Some("webp".into()),
+            dpi: Some(300),
+            quality: Some(85),
+        };
+        let q = build_pdf_query(&params);
+        let has = |key: &str, val: &str| q.iter().any(|(k, v)| *k == key && v == val);
+        assert!(has("op", "rasterize"));
+        assert!(has("type", "webp"));
+        assert!(has("dpi", "300"));
+        assert!(has("quality", "85"));
+    }
+
+    #[test]
+    fn pdf_prompt_response_deserializes() {
+        let json = r#"{"pdf":{"op":"rasterize","type":"png","dpi":150,"quality":92}}"#;
+        let parsed: PdfPromptResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.pdf.op, "rasterize");
+        assert_eq!(parsed.pdf.format.as_deref(), Some("png"));
+        assert_eq!(parsed.pdf.dpi, Some(150));
     }
 }

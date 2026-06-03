@@ -4,7 +4,7 @@ mod credentials;
 mod mcp;
 
 use anyhow::{Context, Result};
-use api::{MochifyClient, ProcessParams, SquishMeta};
+use api::{MochifyClient, PdfParams, ProcessParams, SquishMeta};
 use clap::Parser;
 use cli::{Args, AuthAction, Commands};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -136,8 +136,26 @@ fn auth_status() -> Result<()> {
     Ok(())
 }
 
+fn is_pdf(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+}
+
 async fn process_files(args: Args) -> Result<()> {
     let client = MochifyClient::new(args.api_key.clone());
+
+    // PDFs go through /v1/pdf, not /v1/squish. Detect them by extension and route
+    // before touching image-only params. A single command can't mix the two modes
+    // (the NLP prompt resolves to one mode), mirroring the frontend.
+    let has_pdf = args.files.iter().any(|p| is_pdf(p));
+    if has_pdf {
+        if args.files.iter().any(|p| !is_pdf(p)) {
+            anyhow::bail!("Can't mix PDFs and images in one command — run them separately.");
+        }
+        return process_pdfs(&args, &client).await;
+    }
 
     // Explicit CLI flags — these always win over prompt-derived params.
     let explicit = ProcessParams {
@@ -162,7 +180,10 @@ async fn process_files(args: Args) -> Result<()> {
         print_prompt_summary(&args.files, &map);
         if args.verbose {
             eprintln!("Prompt response JSON:");
-            eprintln!("{}", serde_json::to_string_pretty(&raw_json).unwrap_or_default());
+            eprintln!(
+                "{}",
+                serde_json::to_string_pretty(&raw_json).unwrap_or_default()
+            );
         }
         Some(map)
     } else {
@@ -184,13 +205,22 @@ async fn process_files(args: Args) -> Result<()> {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or_default();
-                let base_variants = map.get(filename).cloned().unwrap_or_else(|| vec![ProcessParams::default()]);
-                base_variants.into_iter().map(|base| merge_params(base, explicit.clone())).collect()
+                let base_variants = map
+                    .get(filename)
+                    .cloned()
+                    .unwrap_or_else(|| vec![ProcessParams::default()]);
+                base_variants
+                    .into_iter()
+                    .map(|base| merge_params(base, explicit.clone()))
+                    .collect()
             }
             None => vec![explicit.clone()],
         };
 
-        let name = file_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         for params in &variants {
             let label = match &params.out_name_suffix {
                 Some(s) => format!("{name}{s}"),
@@ -216,29 +246,160 @@ async fn process_files(args: Args) -> Result<()> {
     Ok(())
 }
 
+async fn process_pdfs(args: &Args, client: &MochifyClient) -> Result<()> {
+    // Resolve the operation: a prompt (if given) seeds it via NLP, then explicit
+    // flags override. Mirrors the image flow's prompt-then-flags precedence.
+    let prompt_params = if let Some(ref prompt) = args.prompt {
+        let sp = spinner("Parsing prompt...");
+        let paths: Vec<&std::path::Path> = args.files.iter().map(|p| p.as_path()).collect();
+        let (params, raw_json) = client.resolve_pdf_prompt(prompt, &paths).await?;
+        sp.finish_and_clear();
+        if args.verbose {
+            eprintln!("Prompt response JSON:");
+            eprintln!(
+                "{}",
+                serde_json::to_string_pretty(&raw_json).unwrap_or_default()
+            );
+        }
+        Some(params)
+    } else {
+        None
+    };
+
+    let params = resolve_pdf_params(
+        prompt_params,
+        args.op.clone(),
+        args.format.clone(),
+        args.dpi,
+        args.quality,
+    )?;
+    print_pdf_summary(&params);
+
+    for file_path in &args.files {
+        let out_dir = match &args.output {
+            Some(d) => d.clone(),
+            None => file_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from(".")),
+        };
+
+        let name = file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let sp = spinner(format!("Processing {name}..."));
+        match client.pdf(file_path, &params, &out_dir).await {
+            Ok(out) => {
+                sp.finish_and_clear();
+                println!("{}", out.display());
+            }
+            Err(e) => {
+                sp.finish_and_clear();
+                eprintln!("Error processing {name}: {e:#}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Combine prompt-derived and explicit PDF params (explicit wins), validate the
+/// operation, and apply rasterize defaults (PNG @ 150 DPI, matching the frontend).
+fn resolve_pdf_params(
+    prompt: Option<PdfParams>,
+    op: Option<String>,
+    format: Option<String>,
+    dpi: Option<u32>,
+    quality: Option<u32>,
+) -> Result<PdfParams> {
+    let op = op
+        .or_else(|| prompt.as_ref().map(|p| p.op.clone()))
+        .map(|o| o.to_lowercase());
+    let op = match op {
+        Some(o) => o,
+        None => anyhow::bail!(
+            "Specify a PDF operation with --op split|rasterize, or describe it with --prompt."
+        ),
+    };
+    if op != "split" && op != "rasterize" {
+        anyhow::bail!("Unknown --op '{op}'. Use 'split' or 'rasterize'.");
+    }
+
+    if op == "split" {
+        return Ok(PdfParams {
+            op,
+            format: None,
+            dpi: None,
+            quality: None,
+        });
+    }
+
+    let format = format.or_else(|| prompt.as_ref().and_then(|p| p.format.clone()));
+    let dpi = dpi.or_else(|| prompt.as_ref().and_then(|p| p.dpi));
+    let quality = quality.or_else(|| prompt.as_ref().and_then(|p| p.quality));
+    Ok(PdfParams {
+        op,
+        format: Some(format.unwrap_or_else(|| "png".to_string())),
+        dpi: Some(dpi.unwrap_or(150)),
+        quality,
+    })
+}
+
+fn print_pdf_summary(p: &PdfParams) {
+    let desc = if p.op == "split" {
+        "split into per-page PDFs".to_string()
+    } else {
+        let fmt = p.format.as_deref().unwrap_or("png").to_uppercase();
+        let dpi = p.dpi.unwrap_or(150);
+        format!("rasterize to {fmt} at {dpi} DPI")
+    };
+    eprintln!("Interpreted: {desc}");
+}
+
 fn format_params_summary(p: &ProcessParams) -> String {
     let mut parts = Vec::new();
-    if let Some(ref fmt) = p.format { parts.push(fmt.clone()); }
+    if let Some(ref fmt) = p.format {
+        parts.push(fmt.clone());
+    }
     match (p.width, p.height) {
         (Some(w), Some(h)) => parts.push(format!("{w} × {h}")),
         (Some(w), None) => parts.push(format!("{w}w")),
         (None, Some(h)) => parts.push(format!("{h}h")),
         _ => {}
     }
-    if p.crop == Some(true) { parts.push("crop".into()); }
+    if p.crop == Some(true) {
+        parts.push("crop".into());
+    }
     if p.rotation.map(|r| r != 0).unwrap_or(false) {
         parts.push(format!("rotate {}°", p.rotation.unwrap()));
     }
-    if p.clarity == Some(true) { parts.push("clarity".into()); }
-    if p.remove_background == Some(true) { parts.push("remove bg".into()); }
-    if let Some(ref bg) = p.background { parts.push(format!("bg {bg}")); }
-    if parts.is_empty() { "original settings".into() } else { parts.join(" · ") }
+    if p.clarity == Some(true) {
+        parts.push("clarity".into());
+    }
+    if p.remove_background == Some(true) {
+        parts.push("remove bg".into());
+    }
+    if let Some(ref bg) = p.background {
+        parts.push(format!("bg {bg}"));
+    }
+    if parts.is_empty() {
+        "original settings".into()
+    } else {
+        parts.join(" · ")
+    }
 }
 
-fn print_prompt_summary(files: &[PathBuf], map: &std::collections::HashMap<String, Vec<ProcessParams>>) {
+fn print_prompt_summary(
+    files: &[PathBuf],
+    map: &std::collections::HashMap<String, Vec<ProcessParams>>,
+) {
     eprintln!("Interpreted:");
     for file_path in files {
-        let filename = file_path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let filename = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
         if let Some(variants) = map.get(filename) {
             if variants.len() == 1 {
                 eprintln!("  {filename} → {}", format_params_summary(&variants[0]));
@@ -254,16 +415,26 @@ fn print_prompt_summary(files: &[PathBuf], map: &std::collections::HashMap<Strin
 
 fn print_squish_meta(meta: &SquishMeta) {
     let mut parts = Vec::new();
-    if let Some(ref ms) = meta.latency_ms { parts.push(format!("{ms}ms")); }
+    if let Some(ref ms) = meta.latency_ms {
+        parts.push(format!("{ms}ms"));
+    }
     if meta.optimized {
         parts.push("optimized".into());
     } else {
         parts.push("not optimized".into());
-        if let Some(ref r) = meta.reason { parts.push(format!("({r})")); }
+        if let Some(ref r) = meta.reason {
+            parts.push(format!("({r})"));
+        }
     }
-    if let Some(ref q) = meta.quality { parts.push(format!("quality {q}")); }
-    if let Some(ref s) = meta.saliency { parts.push(format!("saliency {s}")); }
-    if meta.bg_removed { parts.push("bg removed".into()); }
+    if let Some(ref q) = meta.quality {
+        parts.push(format!("quality {q}"));
+    }
+    if let Some(ref s) = meta.saliency {
+        parts.push(format!("saliency {s}"));
+    }
+    if meta.bg_removed {
+        parts.push("bg removed".into());
+    }
     eprintln!("  ← {}", parts.join(" · "));
 }
 
@@ -309,8 +480,8 @@ async fn run_mcp_server(api_key: Option<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_params_summary, merge_params};
-    use crate::api::ProcessParams;
+    use super::{format_params_summary, merge_params, resolve_pdf_params};
+    use crate::api::{PdfParams, ProcessParams};
 
     #[test]
     fn explicit_override_wins_unset_falls_back_to_prompt() {
@@ -359,6 +530,69 @@ mod tests {
 
     #[test]
     fn summary_of_empty_params_is_original_settings() {
-        assert_eq!(format_params_summary(&ProcessParams::default()), "original settings");
+        assert_eq!(
+            format_params_summary(&ProcessParams::default()),
+            "original settings"
+        );
+    }
+
+    #[test]
+    fn pdf_rasterize_applies_png_150_defaults() {
+        let p = resolve_pdf_params(None, Some("rasterize".into()), None, None, None).unwrap();
+        assert_eq!(p.op, "rasterize");
+        assert_eq!(p.format.as_deref(), Some("png"));
+        assert_eq!(p.dpi, Some(150));
+    }
+
+    #[test]
+    fn pdf_split_drops_render_params() {
+        let p = resolve_pdf_params(
+            None,
+            Some("split".into()),
+            Some("png".into()),
+            Some(300),
+            None,
+        )
+        .unwrap();
+        assert_eq!(p.op, "split");
+        assert_eq!(p.format, None);
+        assert_eq!(p.dpi, None);
+    }
+
+    #[test]
+    fn pdf_explicit_flags_override_prompt() {
+        let prompt = PdfParams {
+            op: "rasterize".into(),
+            format: Some("png".into()),
+            dpi: Some(150),
+            quality: None,
+        };
+        let p = resolve_pdf_params(Some(prompt), None, Some("webp".into()), Some(300), Some(80))
+            .unwrap();
+        assert_eq!(p.format.as_deref(), Some("webp")); // explicit flag wins
+        assert_eq!(p.dpi, Some(300));
+        assert_eq!(p.quality, Some(80));
+    }
+
+    #[test]
+    fn pdf_prompt_seeds_op_when_no_flag() {
+        let prompt = PdfParams {
+            op: "split".into(),
+            format: None,
+            dpi: None,
+            quality: None,
+        };
+        let p = resolve_pdf_params(Some(prompt), None, None, None, None).unwrap();
+        assert_eq!(p.op, "split");
+    }
+
+    #[test]
+    fn pdf_requires_op_or_prompt() {
+        assert!(resolve_pdf_params(None, None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn pdf_rejects_unknown_op() {
+        assert!(resolve_pdf_params(None, Some("flatten".into()), None, None, None).is_err());
     }
 }

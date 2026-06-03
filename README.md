@@ -122,6 +122,32 @@ By default, when the output format and directory match the input, the result is 
 
 Use `-n, --name` to set an explicit base name: `mochify photo.jpg -t webp -n hero` saves `hero.webp`. The prompt path also supports this: `mochify *.jpg -p "optimise for Shopify, name them product"` will produce `product.webp`, `product_1.webp`, etc.
 
+### PDF processing
+
+PDFs are detected automatically by the `.pdf` extension. You can **split** a PDF into one file per page, or **rasterize** its pages to images. The result is saved as a `.zip` next to the input. (PDFs and images can't be mixed in a single command — run them separately.)
+
+| Flag | Description |
+|---|---|
+| `--op <OP>` | `split` (one PDF per page) or `rasterize` (pages → images) |
+| `-t, --type <FORMAT>` | Rasterize output format: `png`, `jpg`, `webp` (default `png`) |
+| `--dpi <N>` | Rasterize resolution in DPI (default `150`) |
+| `-q, --quality <N>` | Rasterize quality `1–100` for lossy formats (jpg/webp) |
+
+```bash
+# Split a PDF into per-page PDFs
+mochify document.pdf --op split
+
+# Rasterize pages to PNG at 150 DPI
+mochify document.pdf --op rasterize -t png --dpi 150
+
+# High-res JPEGs for print
+mochify document.pdf --op rasterize -t jpg --dpi 300 -q 90
+
+# Or describe it in natural language
+mochify document.pdf -p "split into pngs"
+mochify report.pdf -p "rasterize to high-res jpegs"
+```
+
 ## MCP Server (Claude Desktop)
 
 `mochify` can run as an [MCP server](https://modelcontextprotocol.io), letting Claude process images on your behalf directly from conversation.
@@ -155,11 +181,13 @@ Describe what you want in natural language with the full path to your image:
 
 > "Remove the background from `/Users/me/Desktop/shirt.png` and save as WebP"
 
-Claude calls the `squish` tool automatically and reports back the saved path and file size.
+> "Rasterize `/Users/me/Desktop/report.pdf` to PNGs at 200 DPI"
+
+Claude calls the `squish` tool for images and the `pdf` tool for PDFs automatically, and reports back the saved path and file size.
 
 ## API
 
-Powered by `https://api.mochify.app/v1/squish`. Images are processed in-memory and never written to disk.
+Powered by `https://api.mochify.app` — `/v1/squish` for images and `/v1/pdf` for PDF split/rasterize. Files are processed in-memory and never written to disk.
 
 | Plan | Ops/month | Max file size |
 |---|---|---|

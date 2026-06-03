@@ -2,7 +2,10 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "mochify", about = "CLI for the mochify.app image processing API")]
+#[command(
+    name = "mochify",
+    about = "CLI for the mochify.app image processing API"
+)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -49,6 +52,18 @@ pub struct Args {
     /// Natural-language prompt — calls /v1/prompt to resolve params
     #[arg(short = 'p', long, value_name = "TEXT")]
     pub prompt: Option<String>,
+
+    /// PDF operation for .pdf inputs: split | rasterize
+    #[arg(long, value_name = "OP")]
+    pub op: Option<String>,
+
+    /// PDF rasterize resolution in DPI [default: 150]
+    #[arg(long, value_name = "N")]
+    pub dpi: Option<u32>,
+
+    /// PDF rasterize quality for lossy formats (jpg/webp), 1–100
+    #[arg(short = 'q', long, value_name = "N")]
+    pub quality: Option<u32>,
 
     /// API key [env: MOCHIFY_API_KEY]
     #[arg(short = 'k', long, env = "MOCHIFY_API_KEY", value_name = "KEY")]
