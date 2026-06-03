@@ -20,6 +20,13 @@ brew tap getmochify/mochify
 brew install mochify
 ```
 
+**Windows (Scoop):**
+
+```powershell
+scoop bucket add mochify https://github.com/getmochify/scoop-mochify
+scoop install mochify
+```
+
 **Linux / WSL:**
 
 ```bash
