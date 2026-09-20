@@ -1,4 +1,4 @@
-use crate::api::{MochifyClient, PdfParams, ProcessParams};
+use crate::api::{MochifyClient, PdfOptions, PdfParams, ProcessParams};
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -60,6 +60,36 @@ pub struct SquishInput {
         description = "Strip EXIF/metadata (GPS, timestamps, device identifiers). Defaults to true — metadata is removed. Set false to preserve the original metadata."
     )]
     pub strip_metadata: Option<bool>,
+
+    #[schemars(
+        description = "Output quality 1-100. Defaults to automatic selection, which is usually the right choice — set it only when the user asks for a specific quality, or for visibly smaller/higher-quality output. Overrides smart_compress. 100 is the best LOSSY setting, not lossless."
+    )]
+    pub quality: Option<u32>,
+
+    #[schemars(
+        description = "Saliency-guided quality selection: high-detail subjects get more quality, flat areas less. Good default for \"compress this as well as possible without it looking worse\". Ignored when quality is set."
+    )]
+    pub smart_compress: Option<bool>,
+
+    #[schemars(
+        description = "Exposure adjustment from -100 (darkest) to 100 (brightest). 0 is no change. Use for \"brighten this\" / \"it's too dark\"."
+    )]
+    pub brightness: Option<i32>,
+
+    #[schemars(
+        description = "Progressive encoding plus 4:2:0 chroma subsampling — the smallest file for browser delivery. Use for \"optimize this for my website\"."
+    )]
+    pub optimize_for_web: Option<bool>,
+
+    #[schemars(
+        description = "Pixel-exact output. Only jxl, webp and png can hold it — jpg and avif are rejected, so set `type` to one of those three. Overrides quality and smart_compress. Expect the output to be LARGER than the input; a source that is already lossy (JPEG, AVIF, HEIC) comes back as the best lossy encode instead, since nothing can restore what it discarded."
+    )]
+    pub lossless: Option<bool>,
+
+    #[schemars(
+        description = "Ultra HDR gain map handling. \"preserve\" keeps a gain map the source already has (and does nothing to an SDR source); \"generate\" keeps it AND synthesizes one when the source is plain SDR — use \"generate\" whenever the user asks to make something HDR. Only jpg output can carry a gain map, so set `type` to jpg unless the user asked for another format. Ignored alongside remove_background or clarity, which change the base the gain map is measured against."
+    )]
+    pub hdr: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -70,28 +100,79 @@ pub struct PdfInput {
     pub file_path: String,
 
     #[schemars(
-        description = "Operation: \"split\" to split each page into its own PDF, or \"rasterize\" to render pages to images. Defaults to \"rasterize\"."
+        description = "Operation. \"optimize\" recompresses the images inside the PDF and returns a smaller PDF, leaving text and layout untouched — this is the one for \"compress this PDF\". \"extract\" pulls out the images somebody placed into the document. \"rasterize\" renders every page to an image. \"split\" writes one single-page PDF per page. Defaults to \"rasterize\"."
     )]
     pub op: Option<String>,
 
     #[schemars(
-        description = "Output image format for rasterize: png, jpg, or webp. Defaults to png. Ignored when op is \"split\"."
+        description = "Output image format. rasterize: png (default), jpg, webp, avif or jxl. extract: png, jpg, webp, avif, jxl, or \"original\" (default) to copy each embedded image out with no re-encode. Ignored by optimize (images inside a PDF are always JPEG) and split."
     )]
     #[serde(rename = "type")]
     pub format: Option<String>,
 
     #[schemars(
-        description = "Rasterize resolution in DPI (e.g. 150 for screen, 300 for print). Defaults to 150. Ignored when op is \"split\"."
+        description = "Target resolution in DPI. rasterize: the render resolution of each page (150 for screen, 300 for print; default 150). optimize: the resolution to target for the images kept inside the PDF, measured against how large they are drawn on the page (96 for screen and email, 150 general, 300 to keep print quality). Ignored by extract and split."
     )]
     pub dpi: Option<u32>,
 
     #[schemars(
-        description = "Output quality 1-100 for lossy rasterize formats (jpg/webp). Ignored for split and PNG."
+        description = "Output quality 1-100. Applies to optimize (recompression quality, default 75), extract and rasterize (lossy formats only). Ignored for PNG and for split."
     )]
     pub quality: Option<u32>,
 
     #[schemars(
+        description = "Cap image width in pixels, preserving aspect ratio. extract: caps each extracted image. optimize: caps the longest side of each image rewritten into the PDF. 0 leaves sizes alone. Ignored by rasterize and split."
+    )]
+    pub max_width: Option<u32>,
+
+    #[schemars(
+        description = "Skip images smaller than this on either axis (optimize and extract), which keeps spacers, rules and bullet glyphs out of the result. Defaults to 64; 0 takes everything."
+    )]
+    pub min_size: Option<u32>,
+
+    #[schemars(
         description = "Absolute output directory path on the user's local macOS filesystem. Defaults to same directory as input file."
+    )]
+    pub output_dir: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PdfCreateInput {
+    #[schemars(
+        description = "Absolute paths to the input images on the user's local macOS filesystem, in the order they should appear — one page per image. Ask the user for the paths if you don't know them."
+    )]
+    pub file_paths: Vec<String>,
+
+    #[schemars(
+        description = "Page size: \"fit\" (default — each page is exactly its image, no whitespace), \"a4\", or \"letter\"."
+    )]
+    pub page: Option<String>,
+
+    #[schemars(description = "Quality 1-100 for the JPEG embedded in each page. Defaults to 82.")]
+    pub quality: Option<u32>,
+
+    #[schemars(
+        description = "Pixels per inch used to size a \"fit\" page, 36-600. Defaults to 96."
+    )]
+    pub dpi: Option<u32>,
+
+    #[schemars(
+        description = "Downscale images wider than this before embedding them. 0 (default) leaves them alone."
+    )]
+    pub max_width: Option<u32>,
+
+    #[schemars(
+        description = "Set false to get one single-page PDF per image, returned as a .zip, instead of one combined document. Defaults to true (one PDF)."
+    )]
+    pub combine: Option<bool>,
+
+    #[schemars(
+        description = "Optional base name for the output file (without extension). Defaults to the first image's name."
+    )]
+    pub output_name: Option<String>,
+
+    #[schemars(
+        description = "Absolute output directory path on the user's local macOS filesystem. Defaults to the directory of the first image."
     )]
     pub output_dir: Option<String>,
 }
@@ -114,7 +195,7 @@ impl MochifyMcp {
 #[tool_router]
 impl MochifyMcp {
     #[tool(
-        description = "Process an image using the mochify.app API. Supports format conversion (jpg/png/webp/avif/jxl), resizing, cropping, and rotation."
+        description = "Process an image using the mochify.app API. Supports format conversion (jpg/png/webp/avif/jxl), resizing, cropping, rotation, background removal, brightness, clarity, quality control (fixed, saliency-guided, or lossless), web optimization, and Ultra HDR gain maps."
     )]
     async fn squish(&self, Parameters(input): Parameters<SquishInput>) -> String {
         let path = PathBuf::from(&input.file_path);
@@ -126,6 +207,31 @@ impl MochifyMcp {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| PathBuf::from(".")),
         };
+
+        let hdr = match input.hdr.as_deref() {
+            Some(mode) => match crate::api::normalize_hdr_mode(mode) {
+                Ok(v) => Some(v),
+                Err(e) => return format!("Error: {e:#}"),
+            },
+            None => None,
+        };
+
+        if input.lossless == Some(true)
+            && let Some(ref fmt) = input.format
+        {
+            let fmt = fmt.trim().to_lowercase();
+            let fmt = if fmt == "jpeg" {
+                "jpg".to_string()
+            } else {
+                fmt
+            };
+            if !crate::api::LOSSLESS_FORMATS.contains(&fmt.as_str()) {
+                return format!(
+                    "Error: lossless output is not possible with type {fmt}. Only {} can hold pixel-exact output.",
+                    crate::api::LOSSLESS_FORMATS.join(", ")
+                );
+            }
+        }
 
         let client = MochifyClient::new(self.api_key.clone());
         let params = ProcessParams {
@@ -140,22 +246,53 @@ impl MochifyMcp {
             remove_background: input.remove_background,
             background: input.background,
             strip_exif: input.strip_metadata,
+            hdr,
+            quality: input.quality,
+            smart_compress: input.smart_compress,
+            brightness: input.brightness,
+            optimize_for_web: input.optimize_for_web,
+            lossless: input.lossless,
         };
 
         match client.squish(&path, &params, &out_dir).await {
-            Ok((out_path, _meta)) => {
+            Ok((out_path, meta)) => {
+                // X-Mochify-HDR describes the bytes that came back, so it is the only
+                // honest answer to "did it actually get a gain map?".
+                let hdr_note = match (params.hdr.as_ref(), meta.hdr.as_deref()) {
+                    (Some(_), Some("true")) => " (HDR gain map preserved from the source)",
+                    (Some(_), Some("generated")) => " (HDR gain map generated)",
+                    (Some(_), Some("false")) => {
+                        " (no HDR gain map in the output — only jpg output can carry one)"
+                    }
+                    _ => "",
+                };
+                // "downgraded" means the source was already lossy, so the request could
+                // not be honoured literally — say so rather than implying pixel-exactness.
+                let lossless_note = match (params.lossless, meta.lossless.as_deref()) {
+                    (Some(true), Some("downgraded")) => {
+                        " (source was already lossy — encoded at the best lossy setting instead of pixel-exact)"
+                    }
+                    (Some(true), Some("true")) => " (pixel-exact)",
+                    _ => "",
+                };
                 let usage_note = match client.get_usage().await {
                     Ok(u) => format!(" ({} requests remaining today)", u.remaining),
                     Err(_) => String::new(),
                 };
-                format!("Saved to {}{}", out_path.display(), usage_note)
+                format!(
+                    "Saved to {}{}{}{}",
+                    out_path.display(),
+                    hdr_note,
+                    lossless_note,
+                    usage_note
+                )
             }
             Err(e) => format!("Error: {e:#}"),
         }
     }
 
     #[tool(
-        description = "Process a PDF using the mochify.app API. Either split each page into its own PDF (op=\"split\"), or rasterize pages to images — PNG/JPEG/WebP — at a chosen DPI (op=\"rasterize\"). The result is saved as a .zip in the output directory."
+        description = "Process a PDF using the mochify.app API. Four operations: \"optimize\" recompresses the images inside the PDF and returns a smaller PDF that is still searchable (use this for \"compress/shrink this PDF\"); \"extract\" pulls the embedded images out as an archive; \"rasterize\" renders each page to an image (PNG/JPEG/WebP/AVIF/JXL) at a chosen DPI; \"split\" writes one single-page PDF per page. optimize saves a .pdf, the others save a .zip, in the output directory."
     )]
     async fn pdf(&self, Parameters(input): Parameters<PdfInput>) -> String {
         let path = PathBuf::from(&input.file_path);
@@ -168,33 +305,92 @@ impl MochifyMcp {
                 .unwrap_or_else(|| PathBuf::from(".")),
         };
 
-        let op = input
-            .op
-            .unwrap_or_else(|| "rasterize".to_string())
-            .to_lowercase();
-        if op != "split" && op != "rasterize" {
-            return format!("Error: unknown op '{op}'. Use 'split' or 'rasterize'.");
+        let op = input.op.unwrap_or_else(|| "rasterize".to_string());
+        if op.trim().eq_ignore_ascii_case("create") {
+            return "Error: use the pdf_create tool to build a PDF from images.".to_string();
         }
-
-        let params = if op == "rasterize" {
-            PdfParams {
-                op,
-                format: Some(input.format.unwrap_or_else(|| "png".to_string())),
-                dpi: Some(input.dpi.unwrap_or(150)),
+        let params = match PdfParams::for_op(
+            &op,
+            PdfOptions {
+                format: input.format,
+                dpi: input.dpi,
                 quality: input.quality,
-            }
-        } else {
-            PdfParams {
-                op,
-                format: None,
-                dpi: None,
-                quality: None,
-            }
+                max_width: input.max_width,
+                min_size: input.min_size,
+                ..Default::default()
+            },
+        ) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e:#}"),
         };
 
         let client = MochifyClient::new(self.api_key.clone());
         match client.pdf(&path, &params, &out_dir).await {
-            Ok(out_path) => {
+            Ok((out_path, meta)) => {
+                // How much smaller the PDF got is the entire point of optimize, and it
+                // only exists in a response header.
+                let saved_note = match (params.op.as_str(), meta.saved_pct.as_deref()) {
+                    ("optimize", Some("0")) => {
+                        " (already well optimized — the original was returned unchanged)"
+                            .to_string()
+                    }
+                    ("optimize", Some(pct)) => format!(" ({pct}% smaller)"),
+                    _ => String::new(),
+                };
+                let usage_note = match client.get_usage().await {
+                    Ok(u) => format!(" ({} requests remaining today)", u.remaining),
+                    Err(_) => String::new(),
+                };
+                format!(
+                    "Saved to {}{}{}",
+                    out_path.display(),
+                    saved_note,
+                    usage_note
+                )
+            }
+            Err(e) => format!("Error: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Build a PDF from images using the mochify.app API — one page per image, in the order given. Saves a single .pdf, or a .zip of one-page PDFs when combine is false."
+    )]
+    async fn pdf_create(&self, Parameters(input): Parameters<PdfCreateInput>) -> String {
+        if input.file_paths.is_empty() {
+            return "Error: no images given. Pass the absolute path of each image in page order."
+                .to_string();
+        }
+        let paths: Vec<PathBuf> = input.file_paths.iter().map(PathBuf::from).collect();
+
+        let out_dir = match input.output_dir {
+            Some(ref d) => PathBuf::from(d),
+            None => paths[0]
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from(".")),
+        };
+
+        let params = match PdfParams::for_op(
+            "create",
+            PdfOptions {
+                dpi: input.dpi,
+                quality: input.quality,
+                max_width: input.max_width,
+                page: input.page,
+                combine: input.combine,
+                ..Default::default()
+            },
+        ) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e:#}"),
+        };
+
+        let client = MochifyClient::new(self.api_key.clone());
+        match client
+            .pdf_create(&paths, &params, &out_dir, input.output_name.as_deref())
+            .await
+        {
+            Ok((out_path, _meta)) => {
                 let usage_note = match client.get_usage().await {
                     Ok(u) => format!(" ({} requests remaining today)", u.remaining),
                     Err(_) => String::new(),
@@ -211,13 +407,16 @@ impl ServerHandler for MochifyMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "You have access to the mochify image processing API via two tools. \
-                 Both read files directly from the user's local filesystem — you do NOT \
-                 need to read the file yourself, and you can access local files. \
+                "You have access to the mochify image and PDF processing API via three \
+                 tools. They read files directly from the user's local filesystem — you do \
+                 NOT need to read the file yourself, and you can access local files. \
                  Use the squish tool for any image task (compression, format conversion, \
-                 resizing, cropping, rotation, background removal). \
-                 Use the pdf tool for PDF tasks: splitting a PDF into per-page PDFs, or \
-                 rasterizing pages to PNG/JPEG/WebP images at a given DPI. \
+                 resizing, cropping, rotation, background removal, brightness, quality, \
+                 lossless encoding, web optimization, Ultra HDR gain maps). \
+                 Use the pdf tool for anything that takes a PDF in: optimize (make the PDF \
+                 smaller, keeping text and layout), extract (pull out the images inside it), \
+                 rasterize (render pages to images at a given DPI), split (one PDF per page). \
+                 Use the pdf_create tool to build a PDF out of images, one page per image. \
                  If the user has not provided a file path, ask them for the full path."
                     .into(),
             ),

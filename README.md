@@ -92,6 +92,15 @@ mochify [OPTIONS] <FILES>...
 | `-o, --output <DIR>` | Output directory (default: same as input) |
 | `-n, --name <NAME>` | Base name for the output file (without extension) |
 | `--clarity` | Apply clarity (midtone contrast enhancement — crisper, more detailed look) |
+| `--remove-bg` | Remove the background (AI foreground isolation) |
+| `--background <COLOR>` | Composite colour for `--remove-bg` (`white`, `#ff0000`, …) |
+| `--keep-metadata` | Preserve EXIF/metadata (stripped by default) |
+| `-q, --quality <N>` | Output quality `1–100` (default: automatic) |
+| `--smart-compress` | Saliency-guided quality — detail keeps more, flat areas less |
+| `--brightness <N>` | Exposure, `-100` (darkest) to `+100` (brightest) |
+| `--optimize-for-web` | Progressive + 4:2:0 chroma — smallest file to serve |
+| `--lossless` | Pixel-exact output (`jxl`, `webp`, `png` only) |
+| `--hdr [MODE]` | Ultra HDR gain map: `preserve` (bare flag) or `generate` |
 | `-p, --prompt <TEXT>` | Natural-language prompt — resolves all params automatically |
 | `-k, --api-key <KEY>` | API key override (or set `MOCHIFY_API_KEY` env var) |
 
@@ -123,6 +132,51 @@ cat images.txt | mochify -p "convert to avif 1200px wide" -o ./compressed
 ls *.heic | mochify -t jpg
 ```
 
+### Quality
+
+Quality is chosen automatically unless you say otherwise.
+
+```bash
+# Fixed quality
+mochify photo.jpg -t webp -q 70
+
+# Let saliency pick it — detailed subjects keep more, flat areas less
+mochify photo.jpg -t avif --smart-compress
+
+# Smallest file to serve from a web server
+mochify photo.jpg -t webp --optimize-for-web
+
+# Brighten a dark photo
+mochify photo.jpg --brightness 30
+
+# Pixel-exact
+mochify scan.png -t webp --lossless
+```
+
+`--lossless` only works for `jxl`, `webp` and `png` — `jpg` and `avif` are rejected before the request goes out. It overrides `-q` and `--smart-compress`, and the output is usually **larger** than the input: lossless preserves pixels, not file size. A source that is already lossy (JPEG, AVIF, HEIC) comes back as the best lossy encode instead, since nothing can restore what that file discarded — the CLI says so when that happens.
+
+### HDR (Ultra HDR gain maps)
+
+`--hdr` controls the Ultra HDR / ISO 21496-1 gain map that makes a photo render with real headroom on an HDR display.
+
+| Mode | What it does |
+|---|---|
+| `--hdr` (or `--hdr preserve`) | Keeps a gain map the source already has. Never invents one, so it does nothing to an SDR photo. |
+| `--hdr generate` | Keeps an existing gain map **and** synthesises one when the source is plain SDR. This is the one for "make it HDR". |
+
+Only `jpg` output can carry a gain map (`jxl` carries HDR by a different route; `avif`, `webp` and `png` cannot), so pair it with `-t jpg`. It is also skipped alongside `--clarity` or `--remove-bg`, which change the base the gain map is a ratio to. The CLI reads the `X-Mochify-HDR` response header and tells you when the output ended up with no gain map.
+
+```bash
+# Keep the headroom an iPhone photo already captured, converting to JPEG
+mochify IMG_1234.heic -t jpg --hdr
+
+# Give an SDR photo a gain map
+mochify photo.jpg --hdr generate
+
+# Or just say so
+mochify photo.jpg -p "make this HDR"
+```
+
 ### Output file naming
 
 By default, when the output format and directory match the input, the result is saved as `{name}_mochified.{ext}` so it's always clear something happened. If that file already exists, a numeric suffix is added (`_1`, `_2`, etc.). When the format changes (e.g. `.jpg` → `.webp`), the extension change is already unambiguous so no suffix is added.
@@ -131,29 +185,55 @@ Use `-n, --name` to set an explicit base name: `mochify photo.jpg -t webp -n her
 
 ### PDF processing
 
-PDFs are detected automatically by the `.pdf` extension. You can **split** a PDF into one file per page, or **rasterize** its pages to images. The result is saved as a `.zip` next to the input. (PDFs and images can't be mixed in a single command — run them separately.)
+PDFs are detected automatically by the `.pdf` extension, and `--op` picks what to do with them. (PDFs and images can't be mixed in a single command — run them separately.)
 
-| Flag | Description |
-|---|---|
-| `--op <OP>` | `split` (one PDF per page) or `rasterize` (pages → images) |
-| `-t, --type <FORMAT>` | Rasterize output format: `png`, `jpg`, `webp` (default `png`) |
-| `--dpi <N>` | Rasterize resolution in DPI (default `150`) |
-| `-q, --quality <N>` | Rasterize quality `1–100` for lossy formats (jpg/webp) |
+| Op | Takes | Returns | What it does |
+|---|---|---|---|
+| `optimize` | a PDF | `.pdf` | Recompresses the images inside the PDF. Text, fonts, vector art and layout are untouched, so the document stays searchable. |
+| `extract` | a PDF | `.zip` | Pulls out the images somebody placed into the document, at the resolution they were stored at. |
+| `rasterize` | a PDF | `.zip` | Renders every page to an image, text and all. |
+| `split` | a PDF | `.zip` | Explodes the PDF into one single-page PDF per page. |
+| `create` | images | `.pdf` | Builds a PDF from images, one page per image, in the order given. |
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--op <OP>` | all | `optimize`, `extract`, `rasterize`, `split`, `create` |
+| `-t, --type <FORMAT>` | rasterize, extract | `png`, `jpg`, `webp`, `avif`, `jxl` — plus `original` for `extract` (no re-encode) |
+| `--dpi <N>` | rasterize, optimize, create | Render resolution (rasterize, default `150`), target resolution for the images kept inside the PDF (optimize), or page sizing (create) |
+| `-q, --quality <N>` | all but split | Output quality `1–100` (same flag as for images) |
+| `--max-width <N>` | extract, optimize, create | Cap image width in pixels; `0` leaves sizes alone |
+| `--min-size <N>` | extract, optimize | Skip images smaller than this on either axis; `0` takes everything |
+| `--page <SIZE>` | create | `fit` (default), `a4`, `letter` |
+| `--no-combine` | create | One single-page PDF per image, returned as a `.zip` |
 
 ```bash
-# Split a PDF into per-page PDFs
-mochify document.pdf --op split
+# Make a PDF smaller without touching the text
+mochify report.pdf --op optimize -q 75 --dpi 150
 
-# Rasterize pages to PNG at 150 DPI
+# Pull the embedded images out as WebP, capped at 1600px
+mochify brochure.pdf --op extract -t webp --max-width 1600
+
+# Render pages to PNG at 150 DPI, or high-res JPEGs for print
 mochify document.pdf --op rasterize -t png --dpi 150
-
-# High-res JPEGs for print
 mochify document.pdf --op rasterize -t jpg --dpi 300 -q 90
 
+# One PDF per page
+mochify document.pdf --op split
+
+# Build a PDF from images (one page per image, in the order given)
+mochify page-*.jpg --op create --page a4 -n scanned
+mochify page-*.jpg --op create --no-combine   # one PDF per image, as a zip
+
 # Or describe it in natural language
+mochify report.pdf -p "compress this pdf"
+mochify brochure.pdf -p "get the photos out as png"
 mochify document.pdf -p "split into pngs"
-mochify report.pdf -p "rasterize to high-res jpegs"
+mochify page-*.jpg --op create -p "one a4 pdf, good quality"
 ```
+
+Outputs are named after the input: `report_compressed.pdf`, `brochure_images.zip`, `document_rasterized.zip`, `document_pages.zip`, and `<first image>.pdf` for `create` (override with `-n`).
+
+`optimize`, `extract`, `rasterize` and `split` require a paid plan; `create` works on every plan, including Free.
 
 ## MCP Server (Claude Desktop)
 
@@ -190,11 +270,19 @@ Describe what you want in natural language with the full path to your image:
 
 > "Rasterize `/Users/me/Desktop/report.pdf` to PNGs at 200 DPI"
 
-Claude calls the `squish` tool for images and the `pdf` tool for PDFs automatically, and reports back the saved path and file size.
+> "Compress `/Users/me/Desktop/report.pdf` — it's too big to email"
+
+> "Make `/Users/me/Desktop/sunset.jpg` HDR"
+
+> "Brighten `/Users/me/Desktop/dim.jpg` a bit and optimise it for my website"
+
+> "Turn the scans in `/Users/me/Desktop/receipts/` into one A4 PDF"
+
+Claude calls the `squish` tool for images, the `pdf` tool for anything that takes a PDF in (optimize, extract, rasterize, split), and `pdf_create` to build a PDF from images, and reports back the saved path and file size.
 
 ## API
 
-Powered by `https://api.mochify.app` — `/v1/squish` for images and `/v1/pdf` for PDF split/rasterize. Files are processed in-memory and never written to disk.
+Powered by `https://api.mochify.app` — `/v1/squish` for images and `/v1/pdf` for PDF optimize/extract/rasterize/split/create. Files are processed in-memory and never written to disk.
 
 | Plan | Ops/month | Max file size |
 |---|---|---|

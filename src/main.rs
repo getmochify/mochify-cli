@@ -4,7 +4,7 @@ mod credentials;
 mod mcp;
 
 use anyhow::{Context, Result};
-use api::{MochifyClient, PdfParams, ProcessParams, SquishMeta};
+use api::{MochifyClient, PdfMeta, PdfOptions, PdfParams, PdfPrompt, ProcessParams, SquishMeta};
 use clap::Parser;
 use cli::{Args, AuthAction, Commands};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -157,6 +157,24 @@ async fn process_files(args: Args) -> Result<()> {
     // before touching image-only params. A single command can't mix the two modes
     // (the NLP prompt resolves to one mode), mirroring the frontend.
     let has_pdf = args.files.iter().any(|p| is_pdf(p));
+
+    // `--op create` is the one PDF op whose inputs are images, so it is chosen by the
+    // flag rather than by extension — there is nothing in a .jpg to route on.
+    if args
+        .op
+        .as_deref()
+        .map(|o| o.trim().eq_ignore_ascii_case("create"))
+        .unwrap_or(false)
+    {
+        if has_pdf {
+            anyhow::bail!(
+                "--op create builds a PDF from images — pass images, not PDFs. \
+                 To make an existing PDF smaller, use --op optimize."
+            );
+        }
+        return create_pdf(&args, &client).await;
+    }
+
     if has_pdf {
         if args.files.iter().any(|p| !is_pdf(p)) {
             anyhow::bail!("Can't mix PDFs and images in one command — run them separately.");
@@ -169,6 +187,41 @@ async fn process_files(args: Args) -> Result<()> {
         && !matches!(r, 0 | 90 | 180 | 270)
     {
         anyhow::bail!("Invalid --rotation {r}. Use 0, 90, 180, or 270.");
+    }
+
+    // Fail on a bad --hdr mode before uploading anything.
+    let hdr = match args.hdr.as_deref() {
+        Some(mode) => Some(api::normalize_hdr_mode(mode)?),
+        None => None,
+    };
+
+    if let Some(q) = args.quality
+        && !(1..=100).contains(&q)
+    {
+        anyhow::bail!("Invalid --quality {q}. Use 1–100.");
+    }
+    if let Some(b) = args.brightness
+        && !(-100..=100).contains(&b)
+    {
+        anyhow::bail!("Invalid --brightness {b}. Use -100 (darkest) to 100 (brightest).");
+    }
+    // The API answers lossless + jpg/avif with a 400, so catch it here rather than
+    // spending a request to be told.
+    if args.lossless
+        && let Some(ref fmt) = args.format
+    {
+        let fmt = fmt.trim().to_lowercase();
+        let fmt = if fmt == "jpeg" {
+            "jpg".to_string()
+        } else {
+            fmt
+        };
+        if !api::LOSSLESS_FORMATS.contains(&fmt.as_str()) {
+            anyhow::bail!(
+                "--lossless can't be used with -t {fmt}. Only {} can hold pixel-exact output.",
+                api::LOSSLESS_FORMATS.join(", ")
+            );
+        }
     }
 
     // Explicit CLI flags — these always win over prompt-derived params.
@@ -188,6 +241,12 @@ async fn process_files(args: Args) -> Result<()> {
         } else {
             None
         },
+        hdr,
+        quality: args.quality,
+        smart_compress: args.smart_compress.then_some(true),
+        brightness: args.brightness,
+        optimize_for_web: args.optimize_for_web.then_some(true),
+        lossless: args.lossless.then_some(true),
     };
 
     // If a prompt was supplied, resolve params for all files in one request.
@@ -250,6 +309,8 @@ async fn process_files(args: Args) -> Result<()> {
                 Ok((out, meta)) => {
                     sp.finish_and_clear();
                     println!("{}", out.display());
+                    warn_if_hdr_dropped(params, &meta);
+                    warn_if_lossless_downgraded(params, &meta);
                     if args.verbose {
                         print_squish_meta(&meta);
                     }
@@ -268,31 +329,17 @@ async fn process_files(args: Args) -> Result<()> {
 async fn process_pdfs(args: &Args, client: &MochifyClient) -> Result<()> {
     // Resolve the operation: a prompt (if given) seeds it via NLP, then explicit
     // flags override. Mirrors the image flow's prompt-then-flags precedence.
-    let prompt_params = if let Some(ref prompt) = args.prompt {
-        let sp = spinner("Parsing prompt...");
-        let paths: Vec<&std::path::Path> = args.files.iter().map(|p| p.as_path()).collect();
-        let (params, raw_json) = client.resolve_pdf_prompt(prompt, &paths).await?;
-        sp.finish_and_clear();
-        if args.verbose {
-            eprintln!("Prompt response JSON:");
-            eprintln!(
-                "{}",
-                serde_json::to_string_pretty(&raw_json).unwrap_or_default()
-            );
-        }
-        Some(params)
-    } else {
-        None
-    };
+    let prompt_params = resolve_prompt_for_pdf(args, client, "pdf").await?;
 
-    let params = resolve_pdf_params(
-        prompt_params,
-        args.op.clone(),
-        args.format.clone(),
-        args.dpi,
-        args.quality,
-    )?;
-    print_pdf_summary(&params);
+    let params = resolve_pdf_params(prompt_params, args)?;
+    // create takes images in, so it can't run on the PDF path — reachable only if the
+    // NLP answers with it for a PDF input.
+    if params.op == "create" {
+        anyhow::bail!(
+            "--op create builds a PDF from images. To make this PDF smaller, use --op optimize."
+        );
+    }
+    print_pdf_summary(&params, args.files.len());
 
     for file_path in &args.files {
         let out_dir = match &args.output {
@@ -309,9 +356,10 @@ async fn process_pdfs(args: &Args, client: &MochifyClient) -> Result<()> {
             .unwrap_or_default();
         let sp = spinner(format!("Processing {name}..."));
         match client.pdf(file_path, &params, &out_dir).await {
-            Ok(out) => {
+            Ok((out, meta)) => {
                 sp.finish_and_clear();
                 println!("{}", out.display());
+                print_pdf_meta(&params, &meta, args.verbose);
             }
             Err(e) => {
                 sp.finish_and_clear();
@@ -323,57 +371,229 @@ async fn process_pdfs(args: &Args, client: &MochifyClient) -> Result<()> {
     Ok(())
 }
 
-/// Combine prompt-derived and explicit PDF params (explicit wins), validate the
-/// operation, and apply rasterize defaults (PNG @ 150 DPI, matching the frontend).
-fn resolve_pdf_params(
-    prompt: Option<PdfParams>,
-    op: Option<String>,
-    format: Option<String>,
-    dpi: Option<u32>,
-    quality: Option<u32>,
-) -> Result<PdfParams> {
-    let op = op
-        .or_else(|| prompt.as_ref().map(|p| p.op.clone()))
-        .map(|o| o.to_lowercase());
-    let op = match op {
-        Some(o) => o,
-        None => anyhow::bail!(
-            "Specify a PDF operation with --op split|rasterize, or describe it with --prompt."
-        ),
+/// `--op create`: build a PDF from images. Every file goes up in one multipart request
+/// (one page per image, in the order given), so this is a single call, not a loop, and
+/// a single output — one combined PDF, or a zip of one-page PDFs with `--no-combine`.
+async fn create_pdf(args: &Args, client: &MochifyClient) -> Result<()> {
+    let prompt_params = resolve_prompt_for_pdf(args, client, "imgpdf").await?;
+    let params = resolve_pdf_params(prompt_params, args)?;
+    print_pdf_summary(&params, args.files.len());
+
+    let out_dir = match &args.output {
+        Some(d) => d.clone(),
+        None => args
+            .files
+            .first()
+            .and_then(|f| f.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".")),
     };
-    if op != "split" && op != "rasterize" {
-        anyhow::bail!("Unknown --op '{op}'. Use 'split' or 'rasterize'.");
-    }
 
-    if op == "split" {
-        return Ok(PdfParams {
-            op,
-            format: None,
-            dpi: None,
-            quality: None,
-        });
+    let count = args.files.len();
+    let sp = spinner(format!(
+        "Building PDF from {count} image{}...",
+        if count == 1 { "" } else { "s" }
+    ));
+    match client
+        .pdf_create(&args.files, &params, &out_dir, args.name.as_deref())
+        .await
+    {
+        Ok((out, meta)) => {
+            sp.finish_and_clear();
+            println!("{}", out.display());
+            print_pdf_meta(&params, &meta, args.verbose);
+            Ok(())
+        }
+        Err(e) => {
+            sp.finish_and_clear();
+            anyhow::bail!("{e:#}");
+        }
     }
-
-    let format = format.or_else(|| prompt.as_ref().and_then(|p| p.format.clone()));
-    let dpi = dpi.or_else(|| prompt.as_ref().and_then(|p| p.dpi));
-    let quality = quality.or_else(|| prompt.as_ref().and_then(|p| p.quality));
-    Ok(PdfParams {
-        op,
-        format: Some(format.unwrap_or_else(|| "png".to_string())),
-        dpi: Some(dpi.unwrap_or(150)),
-        quality,
-    })
 }
 
-fn print_pdf_summary(p: &PdfParams) {
-    let desc = if p.op == "split" {
-        "split into per-page PDFs".to_string()
-    } else {
-        let fmt = p.format.as_deref().unwrap_or("png").to_uppercase();
-        let dpi = p.dpi.unwrap_or(150);
-        format!("rasterize to {fmt} at {dpi} DPI")
+/// Run the NLP prompt for a PDF flow, if one was given. `mode` is "pdf" (PDF in) or
+/// "imgpdf" (images in, PDF out) — they are separate schemas on the worker.
+async fn resolve_prompt_for_pdf(
+    args: &Args,
+    client: &MochifyClient,
+    mode: &str,
+) -> Result<Option<PdfPrompt>> {
+    let Some(ref prompt) = args.prompt else {
+        return Ok(None);
+    };
+    let sp = spinner("Parsing prompt...");
+    let paths: Vec<&std::path::Path> = args.files.iter().map(|p| p.as_path()).collect();
+    let (params, raw_json) = client.resolve_pdf_prompt(prompt, &paths, mode).await?;
+    sp.finish_and_clear();
+    if args.verbose {
+        eprintln!("Prompt response JSON:");
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&raw_json).unwrap_or_default()
+        );
+    }
+    Ok(Some(params))
+}
+
+/// Combine prompt-derived and explicit PDF params — an explicit flag always wins — then
+/// hand them to `PdfParams::for_op`, which validates the op and decides which of them
+/// this op actually sends.
+fn resolve_pdf_params(prompt: Option<PdfPrompt>, args: &Args) -> Result<PdfParams> {
+    let op = args
+        .op
+        .clone()
+        .or_else(|| prompt.as_ref().map(|p| p.op.clone()));
+    let Some(op) = op else {
+        anyhow::bail!(
+            "Specify a PDF operation with --op optimize|extract|rasterize|split, \
+             or describe it with --prompt."
+        )
+    };
+
+    let opts = PdfOptions {
+        format: args
+            .format
+            .clone()
+            .or_else(|| prompt.as_ref().and_then(|p| p.format.clone())),
+        dpi: args.dpi.or_else(|| prompt.as_ref().and_then(|p| p.dpi)),
+        quality: args
+            .quality
+            .or_else(|| prompt.as_ref().and_then(|p| p.quality)),
+        max_width: args
+            .max_width
+            .or_else(|| prompt.as_ref().and_then(|p| p.max_width)),
+        min_size: args.min_size,
+        page: args
+            .page
+            .clone()
+            .or_else(|| prompt.as_ref().and_then(|p| p.page.clone())),
+        // --no-combine is a flag, so it can only ever mean "separate PDFs"; unset leaves
+        // the prompt's answer (or the API default, one combined document) in place.
+        combine: if args.no_combine {
+            Some(false)
+        } else {
+            prompt.as_ref().and_then(|p| p.combine)
+        },
+    };
+
+    PdfParams::for_op(&op, opts)
+}
+
+fn print_pdf_summary(p: &PdfParams, files: usize) {
+    let quality = |suffix: &str| match p.quality {
+        Some(q) => format!("{suffix} at quality {q}"),
+        None => suffix.to_string(),
+    };
+    let desc = match p.op.as_str() {
+        "split" => "split into per-page PDFs".to_string(),
+        "extract" => {
+            let fmt = match p.format.as_deref() {
+                None | Some("original") => "in their original encoding".to_string(),
+                Some(f) => format!("as {}", f.to_uppercase()),
+            };
+            let mut d = format!("extract the embedded images {fmt}");
+            if let Some(w) = p.max_width.filter(|&w| w > 0) {
+                d.push_str(&format!(", capped at {w}px wide"));
+            }
+            d
+        }
+        "optimize" => {
+            let mut d = quality("recompress the images inside the PDF");
+            if let Some(dpi) = p.max_dpi {
+                d.push_str(&format!(", max {dpi} DPI"));
+            }
+            if let Some(px) = p.max_dimension.filter(|&px| px > 0) {
+                d.push_str(&format!(", max {px}px"));
+            }
+            d
+        }
+        "create" => {
+            let page = p.page.as_deref().unwrap_or("fit");
+            let pages = if page == "fit" {
+                "pages sized to each image".to_string()
+            } else {
+                format!("{} pages", page.to_uppercase())
+            };
+            if p.combine == Some(false) {
+                format!("build one PDF per image from {files} images, {pages}")
+            } else {
+                format!("build one PDF from {files} images, {pages}")
+            }
+        }
+        _ => {
+            let fmt = p.format.as_deref().unwrap_or("png").to_uppercase();
+            let dpi = p.dpi.unwrap_or(150);
+            format!("rasterize to {fmt} at {dpi} DPI")
+        }
     };
     eprintln!("Interpreted: {desc}");
+}
+
+/// Report what /v1/pdf said it did. `optimize`'s saving is the whole point of the op,
+/// so it is always shown; the rest of the headers are verbose-only detail.
+fn print_pdf_meta(params: &PdfParams, meta: &PdfMeta, verbose: bool) {
+    if params.op == "optimize"
+        && let Some(ref pct) = meta.saved_pct
+    {
+        // 0% is not a failure: the API returns the original bytes when recompressing
+        // them would not have helped.
+        if pct == "0" {
+            eprintln!("  ← already well optimized — the original was returned unchanged");
+        } else {
+            eprintln!("  ← {pct}% smaller");
+        }
+    }
+    if !verbose {
+        return;
+    }
+    let mut parts = Vec::new();
+    if let Some(ref ms) = meta.latency_ms {
+        parts.push(format!("{ms}ms"));
+    }
+    if let Some(ref pages) = meta.pages {
+        parts.push(format!("{pages} pages"));
+    }
+    if let Some(ref images) = meta.images {
+        parts.push(format!("{images} images"));
+    }
+    if let Some(ref n) = meta.recompressed {
+        parts.push(format!("{n} recompressed"));
+    }
+    if !parts.is_empty() {
+        eprintln!("  ← {}", parts.join(" · "));
+    }
+}
+
+/// `X-Mochify-HDR: false` on a request that asked for HDR means the bytes carry no gain
+/// map. The file is otherwise fine, so this is a note rather than an error — but without
+/// it the most common cause (a format that cannot hold one) is invisible.
+/// `X-Mochify-Lossless: downgraded` means the bytes are the best lossy encode rather
+/// than pixel-exact — nothing can restore what an already-lossy source discarded. Worth
+/// saying, since the request asked for something it did not get.
+fn warn_if_lossless_downgraded(params: &ProcessParams, meta: &SquishMeta) {
+    if params.lossless == Some(true) && meta.lossless.as_deref() == Some("downgraded") {
+        eprintln!(
+            "  note: the source was already lossy, so the output is the best lossy encode rather than pixel-exact."
+        );
+    }
+}
+
+fn warn_if_hdr_dropped(params: &ProcessParams, meta: &SquishMeta) {
+    if params.hdr.is_none() || meta.hdr.as_deref() != Some("false") {
+        return;
+    }
+    let carries_hdr = matches!(params.format.as_deref(), None | Some("jpg") | Some("jpeg"));
+    if !carries_hdr {
+        eprintln!(
+            "  note: no HDR gain map in the output — only jpg output can carry one. Re-run with -t jpg."
+        );
+    } else if params.hdr.as_deref() == Some("1") {
+        eprintln!(
+            "  note: the source had no gain map to preserve. Use --hdr generate to synthesise one."
+        );
+    } else {
+        eprintln!("  note: the output carries no HDR gain map.");
+    }
 }
 
 fn format_params_summary(p: &ProcessParams) -> String {
@@ -404,6 +624,28 @@ fn format_params_summary(p: &ProcessParams) -> String {
     }
     if p.strip_exif == Some(false) {
         parts.push("keep metadata".into());
+    }
+    if let Some(ref hdr) = p.hdr {
+        parts.push(if hdr == "generate" {
+            "hdr (generate)".into()
+        } else {
+            "hdr (preserve)".into()
+        });
+    }
+    if let Some(q) = p.quality {
+        parts.push(format!("quality {q}"));
+    }
+    if p.smart_compress == Some(true) {
+        parts.push("smart compress".into());
+    }
+    if let Some(b) = p.brightness.filter(|&b| b != 0) {
+        parts.push(format!("brightness {b:+}"));
+    }
+    if p.optimize_for_web == Some(true) {
+        parts.push("optimize for web".into());
+    }
+    if p.lossless == Some(true) {
+        parts.push("lossless".into());
     }
     if parts.is_empty() {
         "original settings".into()
@@ -457,6 +699,12 @@ fn print_squish_meta(meta: &SquishMeta) {
     if meta.bg_removed {
         parts.push("bg removed".into());
     }
+    if let Some(ref hdr) = meta.hdr {
+        parts.push(format!("hdr {hdr}"));
+    }
+    if let Some(ref lossless) = meta.lossless {
+        parts.push(format!("lossless {lossless}"));
+    }
     eprintln!("  ← {}", parts.join(" · "));
 }
 
@@ -475,6 +723,12 @@ fn merge_params(base: ProcessParams, overrides: ProcessParams) -> ProcessParams 
         remove_background: overrides.remove_background.or(base.remove_background),
         background: overrides.background.or(base.background),
         strip_exif: overrides.strip_exif.or(base.strip_exif),
+        hdr: overrides.hdr.or(base.hdr),
+        quality: overrides.quality.or(base.quality),
+        smart_compress: overrides.smart_compress.or(base.smart_compress),
+        brightness: overrides.brightness.or(base.brightness),
+        optimize_for_web: overrides.optimize_for_web.or(base.optimize_for_web),
+        lossless: overrides.lossless.or(base.lossless),
     }
 }
 
@@ -503,8 +757,29 @@ async fn run_mcp_server(api_key: Option<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_params_summary, merge_params, resolve_pdf_params};
-    use crate::api::{PdfParams, ProcessParams};
+    use super::{format_params_summary, merge_params, resolve_pdf_params, warn_if_hdr_dropped};
+    use crate::api::{PdfPrompt, ProcessParams, SquishMeta};
+    use crate::cli::Args;
+    use clap::Parser;
+
+    /// Parse flags the way the binary does, so the tests exercise the real clap config.
+    fn args(flags: &[&str]) -> Args {
+        let mut argv = vec!["mochify", "doc.pdf"];
+        argv.extend_from_slice(flags);
+        Args::parse_from(argv)
+    }
+
+    fn pdf_prompt(op: &str) -> PdfPrompt {
+        PdfPrompt {
+            op: op.into(),
+            format: Some("png".into()),
+            dpi: Some(150),
+            quality: Some(85),
+            max_width: Some(0),
+            page: None,
+            combine: None,
+        }
+    }
 
     #[test]
     fn explicit_override_wins_unset_falls_back_to_prompt() {
@@ -561,7 +836,7 @@ mod tests {
 
     #[test]
     fn pdf_rasterize_applies_png_150_defaults() {
-        let p = resolve_pdf_params(None, Some("rasterize".into()), None, None, None).unwrap();
+        let p = resolve_pdf_params(None, &args(&["--op", "rasterize"])).unwrap();
         assert_eq!(p.op, "rasterize");
         assert_eq!(p.format.as_deref(), Some("png"));
         assert_eq!(p.dpi, Some(150));
@@ -569,14 +844,8 @@ mod tests {
 
     #[test]
     fn pdf_split_drops_render_params() {
-        let p = resolve_pdf_params(
-            None,
-            Some("split".into()),
-            Some("png".into()),
-            Some(300),
-            None,
-        )
-        .unwrap();
+        let p = resolve_pdf_params(None, &args(&["--op", "split", "-t", "png", "--dpi", "300"]))
+            .unwrap();
         assert_eq!(p.op, "split");
         assert_eq!(p.format, None);
         assert_eq!(p.dpi, None);
@@ -584,14 +853,12 @@ mod tests {
 
     #[test]
     fn pdf_explicit_flags_override_prompt() {
-        let prompt = PdfParams {
-            op: "rasterize".into(),
-            format: Some("png".into()),
-            dpi: Some(150),
-            quality: None,
-        };
-        let p = resolve_pdf_params(Some(prompt), None, Some("webp".into()), Some(300), Some(80))
-            .unwrap();
+        let p = resolve_pdf_params(
+            Some(pdf_prompt("rasterize")),
+            &args(&["-t", "webp", "--dpi", "300", "-q", "80"]),
+        )
+        .unwrap();
+        assert_eq!(p.op, "rasterize"); // op came from the prompt
         assert_eq!(p.format.as_deref(), Some("webp")); // explicit flag wins
         assert_eq!(p.dpi, Some(300));
         assert_eq!(p.quality, Some(80));
@@ -599,23 +866,153 @@ mod tests {
 
     #[test]
     fn pdf_prompt_seeds_op_when_no_flag() {
-        let prompt = PdfParams {
-            op: "split".into(),
-            format: None,
-            dpi: None,
-            quality: None,
-        };
-        let p = resolve_pdf_params(Some(prompt), None, None, None, None).unwrap();
+        let p = resolve_pdf_params(Some(pdf_prompt("split")), &args(&[])).unwrap();
         assert_eq!(p.op, "split");
     }
 
     #[test]
     fn pdf_requires_op_or_prompt() {
-        assert!(resolve_pdf_params(None, None, None, None, None).is_err());
+        assert!(resolve_pdf_params(None, &args(&[])).is_err());
     }
 
     #[test]
     fn pdf_rejects_unknown_op() {
-        assert!(resolve_pdf_params(None, Some("flatten".into()), None, None, None).is_err());
+        assert!(resolve_pdf_params(None, &args(&["--op", "flatten"])).is_err());
+    }
+
+    #[test]
+    fn pdf_optimize_maps_dpi_and_width_to_image_caps() {
+        let p = resolve_pdf_params(
+            None,
+            &args(&[
+                "--op",
+                "optimize",
+                "--dpi",
+                "96",
+                "--max-width",
+                "1200",
+                "-q",
+                "70",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(p.max_dpi, Some(96)); // --dpi means maxDpi here
+        assert_eq!(p.max_dimension, Some(1200)); // --max-width means maxDimension here
+        assert_eq!(p.dpi, None);
+        assert_eq!(p.quality, Some(70));
+    }
+
+    #[test]
+    fn pdf_extract_keeps_original_and_width_cap() {
+        let p = resolve_pdf_params(
+            None,
+            &args(&["--op", "extract", "-t", "original", "--max-width", "1600"]),
+        )
+        .unwrap();
+        assert_eq!(p.format.as_deref(), Some("original"));
+        assert_eq!(p.max_width, Some(1600));
+    }
+
+    #[test]
+    fn pdf_rasterize_rejects_original_which_only_extract_takes() {
+        assert!(resolve_pdf_params(None, &args(&["--op", "rasterize", "-t", "original"])).is_err());
+    }
+
+    #[test]
+    fn pdf_format_aliases_jpeg_to_jpg() {
+        let p = resolve_pdf_params(None, &args(&["--op", "rasterize", "-t", "JPEG"])).unwrap();
+        assert_eq!(p.format.as_deref(), Some("jpg"));
+    }
+
+    #[test]
+    fn pdf_create_takes_page_and_no_combine() {
+        let p = resolve_pdf_params(
+            None,
+            &args(&["--op", "create", "--page", "A4", "--no-combine"]),
+        )
+        .unwrap();
+        assert_eq!(p.op, "create");
+        assert_eq!(p.page.as_deref(), Some("a4"));
+        assert_eq!(p.combine, Some(false));
+    }
+
+    #[test]
+    fn pdf_create_rejects_unknown_page_size() {
+        assert!(resolve_pdf_params(None, &args(&["--op", "create", "--page", "a3"])).is_err());
+    }
+
+    #[test]
+    fn bare_hdr_flag_means_preserve() {
+        // --hdr with no value, and --hdr generate, are the two ways in.
+        assert_eq!(args(&["--hdr"]).hdr.as_deref(), Some("preserve"));
+        assert_eq!(
+            args(&["--hdr", "generate"]).hdr.as_deref(),
+            Some("generate")
+        );
+    }
+
+    #[test]
+    fn quality_flags_summarise() {
+        let s = format_params_summary(&ProcessParams {
+            quality: Some(70),
+            smart_compress: Some(true),
+            brightness: Some(-20),
+            optimize_for_web: Some(true),
+            lossless: Some(true),
+            ..Default::default()
+        });
+        assert!(s.contains("quality 70"));
+        assert!(s.contains("smart compress"));
+        assert!(s.contains("brightness -20"));
+        assert!(s.contains("optimize for web"));
+        assert!(s.contains("lossless"));
+    }
+
+    #[test]
+    fn negative_brightness_parses_as_a_value_not_a_flag() {
+        let a = Args::parse_from(["mochify", "photo.jpg", "--brightness", "-40"]);
+        assert_eq!(a.brightness, Some(-40));
+    }
+
+    #[test]
+    fn lossless_is_a_flag_and_optimise_spelling_is_accepted() {
+        let a = Args::parse_from(["mochify", "photo.jpg", "--lossless", "--optimise-for-web"]);
+        assert!(a.lossless);
+        assert!(a.optimize_for_web);
+    }
+
+    #[test]
+    fn hdr_summary_names_the_mode() {
+        let s = format_params_summary(&ProcessParams {
+            hdr: Some("generate".into()),
+            ..Default::default()
+        });
+        assert!(s.contains("hdr (generate)"));
+    }
+
+    #[test]
+    fn hdr_note_only_fires_when_the_output_carries_none() {
+        // Nothing requested → nothing to say, whatever the header holds.
+        let quiet = ProcessParams::default();
+        warn_if_hdr_dropped(
+            &quiet,
+            &SquishMeta {
+                hdr: Some("false".into()),
+                ..Default::default()
+            },
+        );
+        // Requested and delivered → also nothing to say.
+        let asked = ProcessParams {
+            hdr: Some("generate".into()),
+            format: Some("jpg".into()),
+            ..Default::default()
+        };
+        warn_if_hdr_dropped(
+            &asked,
+            &SquishMeta {
+                hdr: Some("generated".into()),
+                ..Default::default()
+            },
+        );
     }
 }
