@@ -8,8 +8,11 @@ use api::{MochifyClient, PdfMeta, PdfOptions, PdfParams, PdfPrompt, ProcessParam
 use clap::Parser;
 use cli::{Args, AuthAction, Commands};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::time::Duration;
+use tokio::task::JoinSet;
 
 const WORKER_URL: &str = "https://id.mochify.app";
 const AUTH_URL: &str = "https://mochify.app/auth/cli";
@@ -268,6 +271,11 @@ async fn process_files(args: Args) -> Result<()> {
         None
     };
 
+    // Build the whole job list before running any of it. One job per (file, variant):
+    // variants are independent requests, so a single file the prompt answers with two
+    // formats overlaps exactly the way two files do.
+    let mut jobs: Vec<(String, SquishJob)> = Vec::new();
+
     for file_path in &args.files {
         let out_dir = match &args.output {
             Some(d) => d.clone(),
@@ -299,31 +307,128 @@ async fn process_files(args: Args) -> Result<()> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        for params in &variants {
+        for params in variants {
             let label = match &params.out_name_suffix {
                 Some(s) => format!("{name}{s}"),
                 None => name.clone(),
             };
-            let sp = spinner(format!("Processing {label}..."));
-            match client.squish(file_path, params, &out_dir).await {
-                Ok((out, meta)) => {
-                    sp.finish_and_clear();
-                    println!("{}", out.display());
-                    warn_if_hdr_dropped(params, &meta);
-                    warn_if_lossless_downgraded(params, &meta);
-                    if args.verbose {
-                        print_squish_meta(&meta);
-                    }
-                }
-                Err(e) => {
-                    sp.finish_and_clear();
-                    eprintln!("Error processing {label}: {e:#}");
-                }
-            }
+            let client = client.clone();
+            let file_path = file_path.clone();
+            let out_dir = out_dir.clone();
+            jobs.push((
+                label,
+                Box::pin(async move {
+                    let (out, meta) = client.squish(&file_path, &params, &out_dir).await?;
+                    // The params travel back out with the result because the warnings
+                    // below are about what was *asked* for versus what came back.
+                    Ok((out, meta, params))
+                }),
+            ));
         }
     }
 
+    let verbose = args.verbose;
+    run_batch(jobs, args.jobs, |label, result| match result {
+        Ok((out, meta, params)) => {
+            println!("{}", out.display());
+            warn_if_hdr_dropped(&params, &meta);
+            warn_if_lossless_downgraded(&params, &meta);
+            if verbose {
+                print_squish_meta(&meta);
+            }
+        }
+        Err(e) => eprintln!("Error processing {label}: {e:#}"),
+    })
+    .await;
+
     Ok(())
+}
+
+/// One unit of work for [`run_batch`]. Boxed because the jobs are built in a loop and
+/// handed to `tokio::spawn`, which needs a single concrete owned type.
+type Job<R> = Pin<Box<dyn Future<Output = Result<R>> + Send>>;
+
+/// One squish. The params come back out alongside the result because the warnings the
+/// reporter prints compare what was asked for against what the API returned.
+type SquishJob = Job<(PathBuf, SquishMeta, ProcessParams)>;
+
+/// Run `jobs` with at most `limit` in flight, reporting each one in the order it was
+/// submitted rather than the order it finished.
+///
+/// Both halves matter. Before this, every file was one awaited round trip after
+/// another, so a batch spent nearly all its wall time with an idle connection — but a
+/// user who passed `a.jpg b.jpg c.jpg` (or piped `find` into us) still expects the
+/// printed paths in that order, and so does anything reading our stdout. So the work
+/// overlaps and the output does not: a finished job waits in its slot until every job
+/// before it has been reported.
+async fn run_batch<R: Send + 'static>(
+    jobs: Vec<(String, Job<R>)>,
+    limit: usize,
+    report: impl Fn(&str, Result<R>),
+) {
+    let total = jobs.len();
+    if total == 0 {
+        return;
+    }
+
+    let (labels, futures): (Vec<String>, Vec<Job<R>>) = jobs.into_iter().unzip();
+
+    // A single file keeps the old message — "Processing photo.jpg..." says more than
+    // "Processing 0/1..." does.
+    let pb = spinner(if total == 1 {
+        format!("Processing {}...", labels[0])
+    } else {
+        format!("Processing 0/{total}...")
+    });
+
+    let mut queued = futures.into_iter().enumerate();
+    let mut set: JoinSet<(usize, Result<R>)> = JoinSet::new();
+    let mut slots: Vec<Option<Result<R>>> = (0..total).map(|_| None).collect();
+    let mut cursor = 0;
+    let mut finished = 0;
+
+    let mut spawn_next = |set: &mut JoinSet<(usize, Result<R>)>| {
+        if let Some((i, fut)) = queued.next() {
+            set.spawn(async move { (i, fut.await) });
+        }
+    };
+
+    for _ in 0..limit.max(1) {
+        spawn_next(&mut set);
+    }
+
+    while let Some(joined) = set.join_next().await {
+        // A JoinError means the task panicked, which leaves its slot empty. Don't
+        // report it here: the slot's position in the output order still has to be
+        // honoured, so the final pass below handles it.
+        if let Ok((i, result)) = joined {
+            slots[i] = Some(result);
+        }
+        finished += 1;
+        if total > 1 {
+            pb.set_message(format!("Processing {finished}/{total}..."));
+        }
+        // Drain every slot that is now contiguous with what has already been printed.
+        while cursor < total && slots[cursor].is_some() {
+            let result = slots[cursor].take().unwrap();
+            pb.suspend(|| report(&labels[cursor], result));
+            cursor += 1;
+        }
+        spawn_next(&mut set);
+    }
+
+    pb.finish_and_clear();
+
+    // Anything still unreported was blocked behind a panicked job.
+    for (i, label) in labels.iter().enumerate().skip(cursor) {
+        match slots[i].take() {
+            Some(result) => report(label, result),
+            None => report(
+                label,
+                Err(anyhow::anyhow!("worker task failed unexpectedly")),
+            ),
+        }
+    }
 }
 
 async fn process_pdfs(args: &Args, client: &MochifyClient) -> Result<()> {
@@ -341,6 +446,8 @@ async fn process_pdfs(args: &Args, client: &MochifyClient) -> Result<()> {
     }
     print_pdf_summary(&params, args.files.len());
 
+    let mut jobs: Vec<(String, Job<(PathBuf, PdfMeta)>)> = Vec::new();
+
     for file_path in &args.files {
         let out_dir = match &args.output {
             Some(d) => d.clone(),
@@ -354,19 +461,26 @@ async fn process_pdfs(args: &Args, client: &MochifyClient) -> Result<()> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let sp = spinner(format!("Processing {name}..."));
-        match client.pdf(file_path, &params, &out_dir).await {
-            Ok((out, meta)) => {
-                sp.finish_and_clear();
-                println!("{}", out.display());
-                print_pdf_meta(&params, &meta, args.verbose);
-            }
-            Err(e) => {
-                sp.finish_and_clear();
-                eprintln!("Error processing {name}: {e:#}");
-            }
-        }
+        let client = client.clone();
+        let file_path = file_path.clone();
+        // Every PDF in the invocation runs the same op with the same params, so unlike
+        // the image path there is nothing per-job to carry back out.
+        let params = params.clone();
+        jobs.push((
+            name,
+            Box::pin(async move { client.pdf(&file_path, &params, &out_dir).await }),
+        ));
     }
+
+    let verbose = args.verbose;
+    run_batch(jobs, args.jobs, |label, result| match result {
+        Ok((out, meta)) => {
+            println!("{}", out.display());
+            print_pdf_meta(&params, &meta, verbose);
+        }
+        Err(e) => eprintln!("Error processing {label}: {e:#}"),
+    })
+    .await;
 
     Ok(())
 }
@@ -757,10 +871,15 @@ async fn run_mcp_server(api_key: Option<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_params_summary, merge_params, resolve_pdf_params, warn_if_hdr_dropped};
+    use super::{
+        Job, format_params_summary, merge_params, resolve_pdf_params, run_batch,
+        warn_if_hdr_dropped,
+    };
     use crate::api::{PdfPrompt, ProcessParams, SquishMeta};
     use crate::cli::Args;
     use clap::Parser;
+    use std::cell::RefCell;
+    use std::time::Duration;
 
     /// Parse flags the way the binary does, so the tests exercise the real clap config.
     fn args(flags: &[&str]) -> Args {
@@ -1013,6 +1132,75 @@ mod tests {
                 hdr: Some("generated".into()),
                 ..Default::default()
             },
+        );
+    }
+
+    /// Jobs that finish in the reverse of the order they were submitted, so the test
+    /// fails if reporting ever follows completion order instead.
+    fn reversed_jobs(n: u64) -> Vec<(String, Job<u64>)> {
+        (0..n)
+            .map(|i| {
+                let label = format!("job{i}");
+                let job: Job<u64> = Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis((n - i) * 20)).await;
+                    Ok(i)
+                });
+                (label, job)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn batch_reports_in_submission_order_not_completion_order() {
+        let seen = RefCell::new(Vec::new());
+        run_batch(reversed_jobs(5), 5, |label, result| {
+            seen.borrow_mut().push((label.to_string(), result.unwrap()));
+        })
+        .await;
+
+        let seen = seen.into_inner();
+        assert_eq!(
+            seen,
+            (0..5u64)
+                .map(|i| (format!("job{i}"), i))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_of_one_at_a_time_still_runs_everything() {
+        let seen = RefCell::new(Vec::new());
+        run_batch(reversed_jobs(3), 1, |_, result| {
+            seen.borrow_mut().push(result.unwrap());
+        })
+        .await;
+        assert_eq!(seen.into_inner(), vec![0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn batch_reports_a_failed_job_and_keeps_going() {
+        let jobs: Vec<(String, Job<u64>)> = vec![
+            ("ok".into(), Box::pin(async { Ok(1) })),
+            (
+                "bad".into(),
+                Box::pin(async { anyhow::bail!("upload refused") }),
+            ),
+            ("also-ok".into(), Box::pin(async { Ok(3) })),
+        ];
+
+        let seen = RefCell::new(Vec::new());
+        run_batch(jobs, 4, |label, result| {
+            seen.borrow_mut().push((label.to_string(), result.is_ok()));
+        })
+        .await;
+
+        assert_eq!(
+            seen.into_inner(),
+            vec![
+                ("ok".to_string(), true),
+                ("bad".to_string(), false),
+                ("also-ok".to_string(), true),
+            ]
         );
     }
 }

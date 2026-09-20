@@ -102,6 +102,7 @@ mochify [OPTIONS] <FILES>...
 | `--lossless` | Pixel-exact output (`jxl`, `webp`, `png` only) |
 | `--hdr [MODE]` | Ultra HDR gain map: `preserve` (bare flag) or `generate` |
 | `-p, --prompt <TEXT>` | Natural-language prompt — resolves all params automatically |
+| `-j, --jobs <N>` | Files to process at once (default `4`; `1` for strictly one at a time) |
 | `-k, --api-key <KEY>` | API key override (or set `MOCHIFY_API_KEY` env var) |
 
 ### Examples

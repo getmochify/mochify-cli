@@ -126,6 +126,11 @@ pub struct Args {
     #[arg(long = "no-combine")]
     pub no_combine: bool,
 
+    /// How many files to process at once. 1 runs them strictly one after another;
+    /// raise it on a fast uplink, lower it if the API starts answering "at capacity"
+    #[arg(short = 'j', long, value_name = "N", default_value_t = 4)]
+    pub jobs: usize,
+
     /// API key for automation/CI [env: MOCHIFY_API_KEY].
     /// Interactive users can run `mochify auth login` instead.
     #[arg(short = 'k', long, env = "MOCHIFY_API_KEY", value_name = "KEY")]

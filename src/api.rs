@@ -314,6 +314,9 @@ struct PromptResponse {
     files: Vec<PromptFileResult>,
 }
 
+/// Cloning is cheap and is how a batch fans out: `reqwest::Client` is an `Arc` over one
+/// shared connection pool, so every clone reuses the same keep-alive connections.
+#[derive(Clone)]
 pub struct MochifyClient {
     api_key: Option<String>,
     client: reqwest::Client,
