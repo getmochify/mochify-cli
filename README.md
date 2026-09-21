@@ -190,6 +190,8 @@ Use `-n, --name` to set an explicit base name: `mochify photo.jpg -t webp -n her
 
 PDFs are detected automatically by the `.pdf` extension, and `--op` picks what to do with them. (PDFs and images can't be mixed in a single command — run them separately.)
 
+`create` is the exception: its inputs are images, so there is nothing in a `.jpg` to route on. Pass `--op create`, or just say "pdf" in a prompt — `mochify *.jpg -p "convert to pdf"` builds one too.
+
 | Op | Takes | Returns | What it does |
 |---|---|---|---|
 | `optimize` | a PDF | `.pdf` | Recompresses the images inside the PDF. Text, fonts, vector art and layout are untouched, so the document stays searchable. |
@@ -232,6 +234,11 @@ mochify report.pdf -p "compress this pdf"
 mochify brochure.pdf -p "get the photos out as png"
 mochify document.pdf -p "split into pngs"
 mochify page-*.jpg --op create -p "one a4 pdf, good quality"
+
+# A prompt that says "pdf" on image inputs implies --op create
+mochify page-*.jpg -p "convert to pdf"
+mochify scan-*.png -p "one a4 pdf, good quality"
+mochify shot-*.jpg -p "each image as its own pdf"
 ```
 
 Outputs are named after the input: `report_compressed.pdf`, `brochure_images.zip`, `document_rasterized.zip`, `document_pages.zip`, and `<first image>.pdf` for `create` (override with `-n`).

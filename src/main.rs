@@ -153,6 +153,34 @@ fn is_pdf(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Does this prompt ask for a PDF? Whole-word "pdf" or "pdfs" anywhere in the text —
+/// the same test the web app makes (`/\bpdfs?\b/i`) before switching an image batch to
+/// the imgpdf NLP mode, so the two front ends route the same sentence the same way.
+fn prompt_asks_for_pdf(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    let bytes = lower.as_bytes();
+    let word_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut from = 0;
+    while let Some(i) = lower[from..].find("pdf") {
+        let start = from + i;
+        let end = start + 3;
+        // A trailing "s" is part of the word ("convert these to pdfs"); anything else
+        // glued on is a different word ("pdfkit", "mypdf2").
+        let after = if bytes.get(end) == Some(&b's') {
+            end + 1
+        } else {
+            end
+        };
+        let before_ok = start == 0 || !word_char(bytes[start - 1]);
+        let after_ok = bytes.get(after).is_none_or(|&c| !word_char(c));
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
 async fn process_files(args: Args) -> Result<()> {
     let client = MochifyClient::new(args.api_key.clone());
 
@@ -183,6 +211,28 @@ async fn process_files(args: Args) -> Result<()> {
             anyhow::bail!("Can't mix PDFs and images in one command — run them separately.");
         }
         return process_pdfs(&args, &client).await;
+    }
+
+    // Everything below here is images. A PDF-in op asked for on image inputs is a
+    // mistake worth naming — the image path ignores --op entirely, so silently
+    // squishing would answer a "split this" with a resized JPEG.
+    if let Some(op) = args.op.as_deref() {
+        anyhow::bail!(
+            "--op {} works on a .pdf input; these are images. \
+             Use --op create to build a PDF from them.",
+            op.trim().to_lowercase()
+        );
+    }
+
+    // Images in, PDF out: `--op create` is the explicit route, but someone describing
+    // the job in words shouldn't have to know the op's name. The web app routes an
+    // image batch to the imgpdf flow whenever the prompt says "pdf"; match it, so
+    // `mochify *.jpg -p "convert to pdf"` builds a PDF instead of resolving as an
+    // image request and answering with a format the prompt never named.
+    if let Some(ref prompt) = args.prompt
+        && prompt_asks_for_pdf(prompt)
+    {
+        return create_pdf(&args, &client).await;
     }
 
     // Reject rotations the API won't accept before doing any work.
@@ -872,8 +922,8 @@ async fn run_mcp_server(api_key: Option<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Job, format_params_summary, merge_params, resolve_pdf_params, run_batch,
-        warn_if_hdr_dropped,
+        Job, format_params_summary, merge_params, prompt_asks_for_pdf, resolve_pdf_params,
+        run_batch, warn_if_hdr_dropped,
     };
     use crate::api::{PdfPrompt, ProcessParams, SquishMeta};
     use crate::cli::Args;
@@ -1202,5 +1252,26 @@ mod tests {
                 ("also-ok".to_string(), true),
             ]
         );
+    }
+
+    #[test]
+    fn prompt_pdf_detection_matches_the_web_app() {
+        for yes in [
+            "convert to pdf",
+            "make these a PDF",
+            "turn them into pdfs",
+            "one pdf, a4 pages",
+            "pdf!",
+        ] {
+            assert!(prompt_asks_for_pdf(yes), "should route to create: {yes}");
+        }
+        for no in [
+            "convert to webp",
+            "resize to 800px wide",
+            "use pdfkit styling",
+            "name it mypdf2",
+        ] {
+            assert!(!prompt_asks_for_pdf(no), "should stay an image job: {no}");
+        }
     }
 }
