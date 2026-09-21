@@ -345,3 +345,6 @@ Powered by `https://api.mochify.app` — `/v1/squish` for images, `/v1/pdf` for 
 One operation is one output image. Compress, convert, resize and rotate the same file and it stays one operation; ask for two formats at two sizes and that is four. PDF `optimize`, `extract`, `rasterize` and `split` need a paid plan (Day Pass counts); `create` works on every plan including Free.
 
 Visit [mochify.app](https://mochify.app) for the web interface, pricing, and API docs.
+
+Listed in the official MCP Registry as `mcp-name: app.mochify/mochify`.
+

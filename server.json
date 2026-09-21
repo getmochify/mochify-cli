@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "app.mochify/mochify",
+  "title": "Mochify",
+  "description": "Privacy-first image and PDF processing. Compress and convert between JPEG, PNG, WebP, AVIF and JPEG XL, resize, smart-crop, rotate, adjust brightness and clarity, remove backgrounds, and preserve or generate Ultra HDR gain maps. PDF toolkit: shrink a PDF while its text stays searchable, extract embedded images, rasterize pages, split it, or build one from images. Files are encoded in RAM and originals are never stored.",
+  "version": "1.6.1",
+  "websiteUrl": "https://mochify.app",
+  "repository": {
+    "url": "https://github.com/getmochify/mochify-cli",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.mochify.app/mcp"
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "mochify",
+      "version": "1.6.1",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
