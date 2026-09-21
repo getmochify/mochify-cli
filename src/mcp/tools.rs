@@ -2,7 +2,7 @@ use crate::api::{MochifyClient, PdfOptions, PdfParams, ProcessParams};
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerInfo},
+    model::{Implementation, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
@@ -11,7 +11,10 @@ use std::path::PathBuf;
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SquishInput {
     #[schemars(
-        description = "Absolute path to the input image file on the user's local macOS filesystem (e.g. /Users/username/Desktop/photo.jpg). Ask the user for the path if you don't know it."
+        description = "Absolute path to the input image file on the user's local filesystem \
+         (e.g. /Users/me/Desktop/photo.jpg on macOS, /home/me/photo.jpg on Linux, \
+         C:\\Users\\me\\Desktop\\photo.jpg on Windows). Ask the user for the path if you \
+         don't know it."
     )]
     pub file_path: String,
 
@@ -32,7 +35,8 @@ pub struct SquishInput {
     pub rotation: Option<u32>,
 
     #[schemars(
-        description = "Absolute output directory path on the user's local macOS filesystem. Defaults to same directory as input file."
+        description = "Absolute output directory path on the user's local filesystem. Defaults to the same \
+         directory as the input file."
     )]
     pub output_dir: Option<String>,
 
@@ -95,7 +99,10 @@ pub struct SquishInput {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PdfInput {
     #[schemars(
-        description = "Absolute path to the input PDF file on the user's local macOS filesystem (e.g. /Users/username/Desktop/document.pdf). Ask the user for the path if you don't know it."
+        description = "Absolute path to the input PDF file on the user's local filesystem \
+         (e.g. /Users/me/Desktop/report.pdf on macOS, /home/me/report.pdf on Linux, \
+         C:\\Users\\me\\Desktop\\report.pdf on Windows). Ask the user for the path if you \
+         don't know it."
     )]
     pub file_path: String,
 
@@ -131,7 +138,8 @@ pub struct PdfInput {
     pub min_size: Option<u32>,
 
     #[schemars(
-        description = "Absolute output directory path on the user's local macOS filesystem. Defaults to same directory as input file."
+        description = "Absolute output directory path on the user's local filesystem. Defaults to the same \
+         directory as the input file."
     )]
     pub output_dir: Option<String>,
 }
@@ -139,7 +147,9 @@ pub struct PdfInput {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PdfCreateInput {
     #[schemars(
-        description = "Absolute paths to the input images on the user's local macOS filesystem, in the order they should appear — one page per image. Ask the user for the paths if you don't know them."
+        description = "Absolute paths to the input images on the user's local filesystem, in the order \
+         they should appear — one page per image. Ask the user for the paths if you don't \
+         know them."
     )]
     pub file_paths: Vec<String>,
 
@@ -172,7 +182,8 @@ pub struct PdfCreateInput {
     pub output_name: Option<String>,
 
     #[schemars(
-        description = "Absolute output directory path on the user's local macOS filesystem. Defaults to the directory of the first image."
+        description = "Absolute output directory path on the user's local filesystem. Defaults to the \
+         directory of the first image."
     )]
     pub output_dir: Option<String>,
 }
@@ -195,7 +206,21 @@ impl MochifyMcp {
 #[tool_router]
 impl MochifyMcp {
     #[tool(
-        description = "Process an image using the mochify.app API. Supports format conversion (jpg/png/webp/avif/jxl), resizing, cropping, rotation, background removal, brightness, clarity, quality control (fixed, saliency-guided, or lossless), web optimization, and Ultra HDR gain maps."
+        description = "Process a single image file on the user's local filesystem: format \
+         conversion (jpg/png/webp/avif/jxl), resizing, cropping, rotation, background removal, \
+         brightness, clarity, quality control (fixed, saliency-guided or lossless), web \
+         optimization, and Ultra HDR gain maps. Reads the file and writes the result itself, so \
+         do not load the image into the conversation first. Use `pdf` instead for anything that \
+         takes a PDF in, and `pdf_create` to build a PDF out of images. Writes a new file beside \
+         the input (or in output_dir) and never overwrites the original: a name collision gets a \
+         numeric suffix.",
+        annotations(
+            title = "Compress or convert an image",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
     )]
     async fn squish(&self, Parameters(input): Parameters<SquishInput>) -> String {
         let path = PathBuf::from(&input.file_path);
@@ -292,7 +317,23 @@ impl MochifyMcp {
     }
 
     #[tool(
-        description = "Process a PDF using the mochify.app API. Four operations: \"optimize\" recompresses the images inside the PDF and returns a smaller PDF that is still searchable (use this for \"compress/shrink this PDF\"); \"extract\" pulls the embedded images out as an archive; \"rasterize\" renders each page to an image (PNG/JPEG/WebP/AVIF/JXL) at a chosen DPI; \"split\" writes one single-page PDF per page. optimize saves a .pdf, the others save a .zip, in the output directory."
+        description = "Take a PDF file on the user's local filesystem and run one of four \
+         operations on it. \"optimize\" recompresses the images inside the PDF and returns a \
+         smaller PDF that is still searchable, because text, fonts, vector art and layout are \
+         untouched: this is the one for \"compress this PDF\" or \"it is too big to email\". \
+         \"extract\" pulls the embedded images out as an archive. \"rasterize\" renders each page \
+         to an image (PNG/JPEG/WebP/AVIF/JXL) at a chosen DPI. \"split\" writes one single-page \
+         PDF per page. optimize saves a .pdf, the others save a .zip, in the output directory. \
+         Use `pdf_create` instead to build a PDF from images, and `squish` for a single image. \
+         The four operations here need a paid plan; `pdf_create` does not. Writes a new file and \
+         never overwrites the input.",
+        annotations(
+            title = "Optimize, extract, rasterize or split a PDF",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
     )]
     async fn pdf(&self, Parameters(input): Parameters<PdfInput>) -> String {
         let path = PathBuf::from(&input.file_path);
@@ -353,7 +394,17 @@ impl MochifyMcp {
     }
 
     #[tool(
-        description = "Build a PDF from images using the mochify.app API — one page per image, in the order given. Saves a single .pdf, or a .zip of one-page PDFs when combine is false."
+        description = "Build a PDF out of image files on the user's local filesystem, one page \
+         per image, in the order given. Saves a single .pdf, or a .zip of one-page PDFs when \
+         combine is false. Use `pdf` instead for anything that takes an existing PDF in. Works \
+         on every plan including Free. Writes a new file and never overwrites an input.",
+        annotations(
+            title = "Build a PDF from images",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
     )]
     async fn pdf_create(&self, Parameters(input): Parameters<PdfCreateInput>) -> String {
         if input.file_paths.is_empty() {
@@ -421,6 +472,24 @@ impl ServerHandler for MochifyMcp {
                     .into(),
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
+            // Implementation::default() calls from_build_env(), which bakes in
+            // env!("CARGO_CRATE_NAME") at *rmcp's* compile time — so the default
+            // announces this server as "rmcp" 0.16.0. Every client and registry that
+            // introspects reads this, so it has to be set by hand.
+            server_info: Implementation {
+                name: "mochify".to_string(),
+                title: Some("Mochify".to_string()),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                description: Some(
+                    "Privacy-first image and PDF processing: compress and convert between \
+                     JPEG, PNG, WebP, AVIF and JPEG XL, resize, crop, rotate, remove \
+                     backgrounds, generate Ultra HDR gain maps, and optimize, extract, \
+                     rasterize, split or build PDFs."
+                        .to_string(),
+                ),
+                website_url: Some("https://mochify.app".to_string()),
+                icons: None,
+            },
             ..Default::default()
         }
     }
