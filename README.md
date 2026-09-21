@@ -349,5 +349,9 @@ One operation is one output image. Compress, convert, resize and rotate the same
 
 Visit [mochify.app](https://mochify.app) for the web interface, pricing, and API docs.
 
+## Questions
+
+Ask in [GitHub Discussions](https://mochify.app/community) — answers stay searchable there, which a support email thread does not. Bugs and feature requests belong in [Issues](https://github.com/getmochify/mochify-cli/issues). For anything account or billing related, email [hello@mochify.app](mailto:hello@mochify.app).
+
 Listed in the official MCP Registry as `mcp-name: app.mochify/mochify`.
 
