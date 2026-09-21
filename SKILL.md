@@ -5,7 +5,7 @@ description: Use this skill whenever the user wants to compress, convert, resize
 
 # Mochify — Image & PDF Processing
 
-Use the `squish` tool for images, `pdf` for anything that takes a PDF in, and `pdf_create` to build a PDF from images — all via the mochify.app API.
+Use the `squish` tool for images, `pdf` for anything that takes a PDF in, `pdf_create` to build a PDF from images, and `check_usage` to report remaining quota — all via the mochify.app API.
 
 ## `squish` parameters
 

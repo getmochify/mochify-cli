@@ -291,19 +291,22 @@ Set `MOCHIFY_API_KEY` instead for CI, or leave auth off entirely to run on the a
 
 ### Tools
 
-The local server exposes three tools. The hosted server exposes `squish` and `check_usage`.
+Both servers expose the same four tools. The difference is how files get in and out: the local server takes paths and writes to disk, the hosted one takes URLs or base64 and hands back a short-lived download URL.
 
 | Tool | Takes | Does |
 |---|---|---|
 | `squish` | one image | Everything on the image side: format conversion, resize, crop, rotate, background removal, brightness, clarity, quality control (fixed, saliency-guided or lossless), web optimisation, Ultra HDR gain maps. |
 | `pdf` | one PDF | `optimize` (smaller PDF, text and layout untouched), `extract` (the images inside it, as a zip), `rasterize` (pages to images, as a zip), `split` (one PDF per page, as a zip). |
 | `pdf_create` | images | Builds a PDF, one page per image, in the order given. `fit`, `a4` or `letter` pages; `combine: false` returns a zip of single-page PDFs. |
+| `check_usage` | nothing | Reports operations remaining this billing period and the plan they belong to. Needs authentication. |
 
 `squish` parameters: `file_path`, `type`, `width`, `height`, `crop`, `rotation`, `quality`, `smart_compress`, `lossless`, `optimize_for_web`, `brightness`, `clarity`, `remove_background`, `background`, `strip_metadata`, `hdr`, `output_dir`, `output_name`.
 
 `pdf` parameters: `file_path`, `op`, `type`, `dpi`, `quality`, `max_width`, `min_size`, `output_dir`.
 
 `pdf_create` parameters: `file_paths`, `page`, `quality`, `dpi`, `max_width`, `combine`, `output_name`, `output_dir`.
+
+`check_usage` takes no parameters.
 
 Every tool reads and writes the filesystem itself, so the agent never has to load an image to process it. Responses carry the saved path plus whatever the API reported: how much smaller the PDF got, whether a gain map survived, whether a lossless request had to fall back to lossy, and how much quota is left.
 

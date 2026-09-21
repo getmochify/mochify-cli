@@ -451,6 +451,49 @@ impl MochifyMcp {
             Err(e) => format!("Error: {e:#}"),
         }
     }
+
+    // Parity with the hosted server, which has had this since day one. Without it
+    // an agent on the local server has no way to answer "how much quota is left?"
+    // short of shelling out to `mochify usage`.
+    #[tool(
+        description = "Check how many operations remain in the current billing period, and on \
+         which plan. Takes no parameters. Needs authentication: run `mochify auth login`, or set \
+         MOCHIFY_API_KEY for automation. Reports the account's own quota, not the anonymous \
+         IP-based allowance.",
+        annotations(
+            title = "Check remaining quota",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    async fn check_usage(&self) -> String {
+        let client = MochifyClient::new(self.api_key.clone());
+        match client.get_usage().await {
+            Ok(u) => {
+                let plan = if u.plan.is_empty() {
+                    String::new()
+                } else {
+                    format!(" on the {} plan", u.plan)
+                };
+                let count = if u.quota > 0 {
+                    format!("{} of {} operations", u.remaining, u.quota)
+                } else {
+                    format!("{} operations", u.remaining)
+                };
+                if u.available {
+                    format!("{count} remaining this billing period{plan}.")
+                } else {
+                    format!(
+                        "{count} remaining this billing period{plan}. Nothing is available right \
+                         now — upgrade the plan or wait for the next cycle."
+                    )
+                }
+            }
+            Err(e) => format!("Error: {e:#}"),
+        }
+    }
 }
 
 #[tool_handler]
@@ -458,7 +501,7 @@ impl ServerHandler for MochifyMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "You have access to the mochify image and PDF processing API via three \
+                "You have access to the mochify image and PDF processing API via four \
                  tools. They read files directly from the user's local filesystem — you do \
                  NOT need to read the file yourself, and you can access local files. \
                  Use the squish tool for any image task (compression, format conversion, \
@@ -468,6 +511,7 @@ impl ServerHandler for MochifyMcp {
                  smaller, keeping text and layout), extract (pull out the images inside it), \
                  rasterize (render pages to images at a given DPI), split (one PDF per page). \
                  Use the pdf_create tool to build a PDF out of images, one page per image. \
+                 Use check_usage to report how much quota is left. \
                  If the user has not provided a file path, ask them for the full path."
                     .into(),
             ),
