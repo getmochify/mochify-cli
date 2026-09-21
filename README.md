@@ -9,7 +9,9 @@
 
 A command-line tool and MCP server for [mochify.app](https://mochify.app) — a fast, privacy-first image compression and conversion API powered by a native C++ engine.
 
-Compress and convert images to modern formats (AVIF, JXL, WebP, Jpegli) from your terminal, or give AI assistants like Claude direct access to image processing via the [Model Context Protocol](https://modelcontextprotocol.io).
+Compress and convert images to modern formats (AVIF, JXL, WebP, Jpegli) from your terminal, work on PDFs, or give AI assistants like Claude direct access to the same engine over the [Model Context Protocol](https://modelcontextprotocol.io) — either as a local stdio server (`mochify serve`) or the hosted one at [`mcp.mochify.app`](https://mcp.mochify.app), which needs no install at all.
+
+**Jump to:** [Installation](#installation) · [CLI usage](#cli-usage) · [PDF processing](#pdf-processing) · [MCP server](#mcp-server) · [Plans](#api)
 
 ## Installation
 
@@ -236,13 +238,41 @@ Outputs are named after the input: `report_compressed.pdf`, `brochure_images.zip
 
 `optimize`, `extract`, `rasterize` and `split` require a paid plan; `create` works on every plan, including Free.
 
-## MCP Server (Claude Desktop)
+## MCP server
 
-`mochify` can run as an [MCP server](https://modelcontextprotocol.io), letting Claude process images on your behalf directly from conversation.
+Mochify speaks [MCP](https://modelcontextprotocol.io) two ways. Both call the same engine at `api.mochify.app`, where encoding happens in RAM and the original is discarded immediately. The difference is where your files live.
 
-### Setup
+| | Hosted (`mcp.mochify.app`) | Local (`mochify serve`) |
+|---|---|---|
+| Install | none | this binary |
+| Transport | Streamable HTTP | stdio |
+| Auth | OAuth 2.0 + PKCE, one browser approval | `mochify auth login`, or anonymous |
+| Input | public HTTPS URL, or base64 bytes | absolute paths on your disk |
+| Output | short-lived download URL (~5 min) on `files.mochify.app` | written straight to disk |
+| Image bytes through the agent | on base64 input | never |
+| Handles | images | images and PDFs |
 
-Run `mochify auth login` first, then add the following to your Claude Desktop config at `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Reach for **hosted** when the agent has no filesystem — Claude.ai, a hosted runtime, anything talking to images that already live on the web. Reach for **local** when the files are on your machine, which is most of the time: nothing but a path and a byte count ever enters the model's context.
+
+Both can run side by side in the same client with independent tokens.
+
+### Hosted (no install)
+
+Register `https://mcp.mochify.app` as a remote MCP connector and complete the OAuth flow once. No API key to copy or rotate.
+
+- **Claude.ai** — Settings → Connectors → Add custom connector
+- **Claude Desktop** — Settings → Connectors, or a `"type": "http"` entry in the config
+- **Cursor, Windsurf, Gemini, any client with remote MCP support** — same URL
+
+Or install it from Smithery:
+
+[![smithery badge](https://smithery.ai/badge/mochify/mochify)](https://smithery.ai/servers/mochify/mochify)
+
+Results come back as a download URL with roughly a five-minute expiry, held in an in-memory pickup store until fetched or the TTL lapses. Originals are never stored. This is the one path that is not zero-retention end to end — see [why we relaxed zero retention for MCP](https://mochify.app/guides/why-we-relaxed-zero-retention-for-mcp).
+
+### Local (stdio)
+
+Run `mochify auth login` first, then point your client at the binary:
 
 ```json
 {
@@ -255,11 +285,31 @@ Run `mochify auth login` first, then add the following to your Claude Desktop co
 }
 ```
 
-Restart Claude Desktop. The mochify server will appear in your connections and use your saved credentials automatically.
+Claude Desktop's config lives at `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS. Restart the client afterwards; the server picks up your saved credentials automatically. Any stdio MCP client works the same way — Cursor, Continue, Cline, Claude Code.
+
+Set `MOCHIFY_API_KEY` instead for CI, or leave auth off entirely to run on the anonymous free tier.
+
+### Tools
+
+The local server exposes three tools. The hosted server exposes `squish` and `check_usage`.
+
+| Tool | Takes | Does |
+|---|---|---|
+| `squish` | one image | Everything on the image side: format conversion, resize, crop, rotate, background removal, brightness, clarity, quality control (fixed, saliency-guided or lossless), web optimisation, Ultra HDR gain maps. |
+| `pdf` | one PDF | `optimize` (smaller PDF, text and layout untouched), `extract` (the images inside it, as a zip), `rasterize` (pages to images, as a zip), `split` (one PDF per page, as a zip). |
+| `pdf_create` | images | Builds a PDF, one page per image, in the order given. `fit`, `a4` or `letter` pages; `combine: false` returns a zip of single-page PDFs. |
+
+`squish` parameters: `file_path`, `type`, `width`, `height`, `crop`, `rotation`, `quality`, `smart_compress`, `lossless`, `optimize_for_web`, `brightness`, `clarity`, `remove_background`, `background`, `strip_metadata`, `hdr`, `output_dir`, `output_name`.
+
+`pdf` parameters: `file_path`, `op`, `type`, `dpi`, `quality`, `max_width`, `min_size`, `output_dir`.
+
+`pdf_create` parameters: `file_paths`, `page`, `quality`, `dpi`, `max_width`, `combine`, `output_name`, `output_dir`.
+
+Every tool reads and writes the filesystem itself, so the agent never has to load an image to process it. Responses carry the saved path plus whatever the API reported: how much smaller the PDF got, whether a gain map survived, whether a lossless request had to fall back to lossy, and how much quota is left.
 
 ### Usage
 
-Describe what you want in natural language with the full path to your image:
+Describe what you want in natural language, with the full path to your file:
 
 > "Convert `/Users/me/Desktop/photo.jpg` to AVIF at 1000px wide"
 
@@ -269,9 +319,9 @@ Describe what you want in natural language with the full path to your image:
 
 > "Remove the background from `/Users/me/Desktop/shirt.png` and save as WebP"
 
-> "Rasterize `/Users/me/Desktop/report.pdf` to PNGs at 200 DPI"
-
 > "Compress `/Users/me/Desktop/report.pdf` — it's too big to email"
+
+> "Rasterize `/Users/me/Desktop/report.pdf` to PNGs at 200 DPI"
 
 > "Make `/Users/me/Desktop/sunset.jpg` HDR"
 
@@ -279,17 +329,19 @@ Describe what you want in natural language with the full path to your image:
 
 > "Turn the scans in `/Users/me/Desktop/receipts/` into one A4 PDF"
 
-Claude calls the `squish` tool for images, the `pdf` tool for anything that takes a PDF in (optimize, extract, rasterize, split), and `pdf_create` to build a PDF from images, and reports back the saved path and file size.
-
 ## API
 
-Powered by `https://api.mochify.app` — `/v1/squish` for images and `/v1/pdf` for PDF optimize/extract/rasterize/split/create. Files are processed in-memory and never written to disk.
+Powered by `https://api.mochify.app` — `/v1/squish` for images, `/v1/pdf` for PDF optimize/extract/rasterize/split/create. Files are processed in RAM and never written to disk.
 
-| Plan | Ops/month | Max file size |
-|---|---|---|
-| Free (no account) | 3/batch | 20 MB |
-| Free (with account) | 25 | 20 MB |
-| Seller ($7.99/mo) | 300 | 75 MB |
-| Pro ($24.99/mo) | 1,200 | 75 MB |
+| Plan | Ops/month | Files per batch | Max file size |
+|---|---|---|---|
+| Free (no account) | 3 per batch | 3 | 20 MB |
+| Free (with account) | 25 | 3 | 20 MB |
+| Day Pass ($2 one-time) | 100, valid 24h | 25 | 75 MB |
+| Seller ($7.99/mo) | 300 | 25 | 75 MB |
+| Pro ($24.99/mo) | 1,200 | 25 | 75 MB |
+| Growth ($79.99/mo) | 5,000 | 25 | 75 MB |
+
+One operation is one output image. Compress, convert, resize and rotate the same file and it stays one operation; ask for two formats at two sizes and that is four. PDF `optimize`, `extract`, `rasterize` and `split` need a paid plan (Day Pass counts); `create` works on every plan including Free.
 
 Visit [mochify.app](https://mochify.app) for the web interface, pricing, and API docs.

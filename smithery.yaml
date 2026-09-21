@@ -1,3 +1,11 @@
+# Smithery stdio descriptor for the local MCP server (`mochify serve`).
+#
+# apiKey is OPTIONAL and deliberately not in `required`. The CLI resolves auth in
+# this order: -k flag, MOCHIFY_API_KEY, then ~/.config/mochify/credentials.toml
+# written by `mochify auth login` (see src/cli.rs and src/credentials.rs). It also
+# runs anonymously on the IP-based free tier. Marking apiKey required forces users
+# through manual key copying that `auth login` exists to avoid, and blocks install
+# for anyone who just wants to try it.
 startCommand:
   type: stdio
   configSchema:
@@ -5,12 +13,17 @@ startCommand:
     properties:
       apiKey:
         type: string
-        description: Your Mochify API key. Generate one from https://mochify.app/dashboard after signing in.
-    required:
-      - apiKey
+        title: Mochify API key
+        description: >-
+          Optional. Leave blank to use the credentials saved by `mochify auth login`,
+          or to run anonymously on the free tier. Generate a key at
+          https://mochify.app/dashboard for CI and automation.
+    additionalProperties: false
+  exampleConfig:
+    apiKey: ""
   commandFunction: |-
     (config) => ({
       command: "mochify",
       args: ["serve"],
-      env: { MOCHIFY_API_KEY: config.apiKey }
+      env: config.apiKey ? { MOCHIFY_API_KEY: config.apiKey } : {}
     })
