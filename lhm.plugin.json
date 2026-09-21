@@ -1,0 +1,284 @@
+{
+  "author": "getmochify",
+  "authorUrl": "https://github.com/getmochify",
+  "description": "Privacy-first image and PDF processing: compress and convert between JPEG, PNG, WebP, AVIF and JPEG XL, resize, crop, rotate, remove backgrounds, generate Ultra HDR gain maps, and optimize, extract, rasterize, split or build PDFs.",
+  "homepage": "https://mochify.app",
+  "identifier": "getmochify-mochify-cli",
+  "name": "Mochify",
+  "prompts": [],
+  "resources": [],
+  "tools": [
+    {
+      "name": "check_usage",
+      "description": "Check how many operations remain in the current billing period, and on which plan. Takes no parameters. Needs authentication: run `mochify auth login`, or set MOCHIFY_API_KEY for automation. Reports the account's own quota, not the anonymous IP-based allowance.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "annotations": {
+        "title": "Check remaining quota",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "pdf",
+      "description": "Take a PDF file on the user's local filesystem and run one of four operations on it. \"optimize\" recompresses the images inside the PDF and returns a smaller PDF that is still searchable, because text, fonts, vector art and layout are untouched: this is the one for \"compress this PDF\" or \"it is too big to email\". \"extract\" pulls the embedded images out as an archive. \"rasterize\" renders each page to an image (PNG/JPEG/WebP/AVIF/JXL) at a chosen DPI. \"split\" writes one single-page PDF per page. optimize saves a .pdf, the others save a .zip, in the output directory. Use `pdf_create` instead to build a PDF from images, and `squish` for a single image. The four operations here need a paid plan; `pdf_create` does not. Writes a new file and never overwrites the input.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "dpi": {
+            "description": "Target resolution in DPI. rasterize: the render resolution of each page (150 for screen, 300 for print; default 150). optimize: the resolution to target for the images kept inside the PDF, measured against how large they are drawn on the page (96 for screen and email, 150 general, 300 to keep print quality). Ignored by extract and split.",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "file_path": {
+            "description": "Absolute path to the input PDF file on the user's local filesystem (e.g. /Users/me/Desktop/report.pdf on macOS, /home/me/report.pdf on Linux, C:\\Users\\me\\Desktop\\report.pdf on Windows). Ask the user for the path if you don't know it.",
+            "type": "string"
+          },
+          "max_width": {
+            "description": "Cap image width in pixels, preserving aspect ratio. extract: caps each extracted image. optimize: caps the longest side of each image rewritten into the PDF. 0 leaves sizes alone. Ignored by rasterize and split.",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "min_size": {
+            "description": "Skip images smaller than this on either axis (optimize and extract), which keeps spacers, rules and bullet glyphs out of the result. Defaults to 64; 0 takes everything.",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "op": {
+            "description": "Operation. \"optimize\" recompresses the images inside the PDF and returns a smaller PDF, leaving text and layout untouched — this is the one for \"compress this PDF\". \"extract\" pulls out the images somebody placed into the document. \"rasterize\" renders every page to an image. \"split\" writes one single-page PDF per page. Defaults to \"rasterize\".",
+            "nullable": true,
+            "type": "string"
+          },
+          "output_dir": {
+            "description": "Absolute output directory path on the user's local filesystem. Defaults to the same directory as the input file.",
+            "nullable": true,
+            "type": "string"
+          },
+          "quality": {
+            "description": "Output quality 1-100. Applies to optimize (recompression quality, default 75), extract and rasterize (lossy formats only). Ignored for PNG and for split.",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "type": {
+            "description": "Output image format. rasterize: png (default), jpg, webp, avif or jxl. extract: png, jpg, webp, avif, jxl, or \"original\" (default) to copy each embedded image out with no re-encode. Ignored by optimize (images inside a PDF are always JPEG) and split.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "PdfInput"
+      },
+      "annotations": {
+        "title": "Optimize, extract, rasterize or split a PDF",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "pdf_create",
+      "description": "Build a PDF out of image files on the user's local filesystem, one page per image, in the order given. Saves a single .pdf, or a .zip of one-page PDFs when combine is false. Use `pdf` instead for anything that takes an existing PDF in. Works on every plan including Free. Writes a new file and never overwrites an input.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "combine": {
+            "description": "Set false to get one single-page PDF per image, returned as a .zip, instead of one combined document. Defaults to true (one PDF).",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "dpi": {
+            "description": "Pixels per inch used to size a \"fit\" page, 36-600. Defaults to 96.",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "file_paths": {
+            "description": "Absolute paths to the input images on the user's local filesystem, in the order they should appear — one page per image. Ask the user for the paths if you don't know them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "max_width": {
+            "description": "Downscale images wider than this before embedding them. 0 (default) leaves them alone.",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "output_dir": {
+            "description": "Absolute output directory path on the user's local filesystem. Defaults to the directory of the first image.",
+            "nullable": true,
+            "type": "string"
+          },
+          "output_name": {
+            "description": "Optional base name for the output file (without extension). Defaults to the first image's name.",
+            "nullable": true,
+            "type": "string"
+          },
+          "page": {
+            "description": "Page size: \"fit\" (default — each page is exactly its image, no whitespace), \"a4\", or \"letter\".",
+            "nullable": true,
+            "type": "string"
+          },
+          "quality": {
+            "description": "Quality 1-100 for the JPEG embedded in each page. Defaults to 82.",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file_paths"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "PdfCreateInput"
+      },
+      "annotations": {
+        "title": "Build a PDF from images",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "squish",
+      "description": "Process a single image file on the user's local filesystem: format conversion (jpg/png/webp/avif/jxl), resizing, cropping, rotation, background removal, brightness, clarity, quality control (fixed, saliency-guided or lossless), web optimization, and Ultra HDR gain maps. Reads the file and writes the result itself, so do not load the image into the conversation first. Use `pdf` instead for anything that takes a PDF in, and `pdf_create` to build a PDF out of images. Writes a new file beside the input (or in output_dir) and never overwrites the original: a name collision gets a numeric suffix.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "background": {
+            "description": "Background colour when removing background. Omit for transparent (default for PNG/WebP/AVIF/JXL). Use \"white\", \"black\", or a hex value like \"#ff0000\". JPEG always composites (default white).",
+            "nullable": true,
+            "type": "string"
+          },
+          "brightness": {
+            "description": "Exposure adjustment from -100 (darkest) to 100 (brightest). 0 is no change. Use for \"brighten this\" / \"it's too dark\".",
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "clarity": {
+            "description": "Apply clarity — midtone contrast enhancement that makes images look crisper and more detailed without affecting overall exposure",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "crop": {
+            "description": "Crop image to exact dimensions",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "file_path": {
+            "description": "Absolute path to the input image file on the user's local filesystem (e.g. /Users/me/Desktop/photo.jpg on macOS, /home/me/photo.jpg on Linux, C:\\Users\\me\\Desktop\\photo.jpg on Windows). Ask the user for the path if you don't know it.",
+            "type": "string"
+          },
+          "hdr": {
+            "description": "Ultra HDR gain map handling. \"preserve\" keeps a gain map the source already has (and does nothing to an SDR source); \"generate\" keeps it AND synthesizes one when the source is plain SDR — use \"generate\" whenever the user asks to make something HDR. Only jpg output can carry a gain map, so set `type` to jpg unless the user asked for another format. Ignored alongside remove_background or clarity, which change the base the gain map is measured against.",
+            "nullable": true,
+            "type": "string"
+          },
+          "height": {
+            "description": "Target height in pixels",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "lossless": {
+            "description": "Pixel-exact output. Only jxl, webp and png can hold it — jpg and avif are rejected, so set `type` to one of those three. Overrides quality and smart_compress. Expect the output to be LARGER than the input; a source that is already lossy (JPEG, AVIF, HEIC) comes back as the best lossy encode instead, since nothing can restore what it discarded.",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "optimize_for_web": {
+            "description": "Progressive encoding plus 4:2:0 chroma subsampling — the smallest file for browser delivery. Use for \"optimize this for my website\".",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "output_dir": {
+            "description": "Absolute output directory path on the user's local filesystem. Defaults to the same directory as the input file.",
+            "nullable": true,
+            "type": "string"
+          },
+          "output_name": {
+            "description": "Optional base name for the output file (without extension). When set, the output is saved as <name>.<format> instead of deriving the name from the input file.",
+            "nullable": true,
+            "type": "string"
+          },
+          "quality": {
+            "description": "Output quality 1-100. Defaults to automatic selection, which is usually the right choice — set it only when the user asks for a specific quality, or for visibly smaller/higher-quality output. Overrides smart_compress. 100 is the best LOSSY setting, not lossless.",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "remove_background": {
+            "description": "Remove the image background (AI foreground isolation). Pair with `background` to composite the cut-out subject onto a solid colour; omit `background` for a transparent result on PNG/WebP/AVIF/JXL.",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "rotation": {
+            "description": "Rotation in degrees: 0, 90, 180, or 270",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          },
+          "smart_compress": {
+            "description": "Saliency-guided quality selection: high-detail subjects get more quality, flat areas less. Good default for \"compress this as well as possible without it looking worse\". Ignored when quality is set.",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "strip_metadata": {
+            "description": "Strip EXIF/metadata (GPS, timestamps, device identifiers). Defaults to true — metadata is removed. Set false to preserve the original metadata.",
+            "nullable": true,
+            "type": "boolean"
+          },
+          "type": {
+            "description": "Output format: jpg, png, webp, avif, or jxl",
+            "nullable": true,
+            "type": "string"
+          },
+          "width": {
+            "description": "Target width in pixels",
+            "format": "uint32",
+            "minimum": 0,
+            "nullable": true,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "SquishInput"
+      },
+      "annotations": {
+        "title": "Compress or convert an image",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    }
+  ],
+  "version": "1.6.2"
+}

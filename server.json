@@ -3,7 +3,7 @@
   "name": "app.mochify/mochify",
   "title": "Mochify",
   "description": "Image and PDF toolkit: convert to AVIF/WebP/JXL, resize, crop, remove backgrounds, optimize PDFs.",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "websiteUrl": "https://mochify.app",
   "repository": {
     "url": "https://github.com/getmochify/mochify-cli",
@@ -13,6 +13,16 @@
     {
       "type": "streamable-http",
       "url": "https://mcp.mochify.app/mcp"
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "mochify",
+      "version": "1.6.2",
+      "transport": {
+        "type": "stdio"
+      }
     }
   ]
 }
