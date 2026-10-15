@@ -419,7 +419,7 @@ impl MochifyClient {
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                return Err(rate_limit_error(self.api_key.is_some()));
+                return Err(prompt_limit_error(response, self.api_key.is_some()).await);
             }
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("API error {status}: {body}");
@@ -594,7 +594,7 @@ impl MochifyClient {
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                return Err(rate_limit_error(self.api_key.is_some()));
+                return Err(prompt_limit_error(response, self.api_key.is_some()).await);
             }
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("API error {status}: {body}");
@@ -795,6 +795,25 @@ fn unique_path(out_dir: &Path, base: &str, ext: &str) -> PathBuf {
 }
 
 /// Map a non-success rate-limit status to a helpful, plan-aware error.
+/// A 429 from `/v1/prompt` is the PROMPT allowance, not the image quota. The
+/// worker names which limit it was (`reason`) and says so in `error`, including
+/// that images are unaffected; showing the image-quota text here told users with
+/// images left that they had run out. Falls back to that text for an older
+/// worker that sends no reason.
+async fn prompt_limit_error(response: reqwest::Response, has_key: bool) -> anyhow::Error {
+    #[derive(serde::Deserialize)]
+    struct Limit {
+        error: Option<String>,
+        reason: Option<String>,
+    }
+    match response.json::<Limit>().await {
+        Ok(Limit { error: Some(error), reason: Some(reason) }) if reason.starts_with("nlp_") => {
+            anyhow::anyhow!(error)
+        }
+        _ => rate_limit_error(has_key),
+    }
+}
+
 fn rate_limit_error(has_key: bool) -> anyhow::Error {
     if has_key {
         anyhow::anyhow!(
