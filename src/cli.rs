@@ -35,6 +35,17 @@ pub struct Args {
     #[arg(long, value_name = "X,Y,W,H")]
     pub region: Option<String>,
 
+    /// Hide areas of the image. ';'-separated: `faces` (automatic face detection) and/or
+    /// boxes x,y,w,h in the --region convention — e.g. "faces;0.62,0.81,0.2,0.06".
+    /// Always strips metadata and drops HDR, which could otherwise reveal what was hidden
+    #[arg(long, value_name = "SPEC")]
+    pub redact: Option<String>,
+
+    /// How --redact hides: "fill" (solid black, the default — use for anything that must
+    /// stay secret) or "blur" (cosmetic; blurred text and faces can sometimes be recovered)
+    #[arg(long = "redact-style", value_name = "STYLE")]
+    pub redact_style: Option<String>,
+
     /// Rotation in degrees (0, 90, 180, 270)
     #[arg(short, long, value_name = "DEG")]
     pub rotation: Option<u32>,

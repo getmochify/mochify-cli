@@ -108,6 +108,34 @@ pub struct SquishInput {
          subject\" use crop with width and height instead — it finds the subject itself."
     )]
     pub region: Option<Vec<f64>>,
+
+    #[schemars(
+        description = "Hide every face automatically, using Mochify's own face detector — no need \
+         to look at the image. Use for \"blur the faces\", \"hide the kids' faces\", \"anonymise \
+         this\". Best-effort: it can miss small faces and side profiles, and the result says how \
+         many it found — if that is 0 or fewer than you can see, add redact_boxes for the rest. \
+         Can be combined with redact_boxes."
+    )]
+    pub redact_faces: Option<bool>,
+
+    #[schemars(
+        description = "Hide specific areas YOU choose by looking at the image: a number plate, an \
+         address label, a name badge, a screen. A list of boxes, each [x, y, width, height] as \
+         FRACTIONS of the image from 0 to 1, origin top-left, on the image as it displays upright \
+         — the same convention as region, and in the same frame (the whole original image, even \
+         when region is also set). Never pixels. Cover the whole item with a small margin: a \
+         partly hidden plate or address is not hidden. Up to 64 boxes."
+    )]
+    pub redact_boxes: Option<Vec<Vec<f64>>>,
+
+    #[schemars(
+        description = "How hidden areas look: \"fill\" (solid black, the default) or \"blur\". Blur \
+         is cosmetic only — blurred text and faces can sometimes be recovered — so use fill for \
+         anything that must stay secret (addresses, documents, plates) and blur only when the user \
+         asks for a blurred look. Redaction always strips metadata and removes HDR, since either \
+         could reveal what was hidden."
+    )]
+    pub redact_style: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -224,8 +252,9 @@ impl MochifyMcp {
          conversion (jpg/png/webp/avif/jxl), resizing, cropping, rotation, background removal, \
          brightness, clarity, quality control (fixed, saliency-guided or lossless), web \
          optimization, Ultra HDR gain maps, and cropping to a region you pick by looking at the \
-         image. Reads the file and writes the result itself, so do not load the image into the \
-         conversation first — unless you are choosing a `region`, which needs you to see it. Use `pdf` instead for anything that \
+         image, and redaction (hide faces automatically, or areas you pick). Reads the file and \
+         writes the result itself, so do not load the image into the conversation first — unless \
+         you are choosing a `region` or `redact_boxes`, which need you to see it. Use `pdf` instead for anything that \
          takes a PDF in, and `pdf_create` to build a PDF out of images. Writes a new file beside \
          the input (or in output_dir) and never overwrites the original: a name collision gets a \
          numeric suffix.",
@@ -281,6 +310,39 @@ impl MochifyMcp {
             None => None,
         };
 
+        // Build the redact list in the wire form and send it through the same parser as
+        // the CLI, so both front ends refuse exactly the same things.
+        let mut entries: Vec<String> = Vec::new();
+        if input.redact_faces == Some(true) {
+            entries.push("faces".into());
+        }
+        for b in input.redact_boxes.iter().flatten() {
+            entries.push(
+                b.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+        let redact = if entries.is_empty() {
+            None
+        } else {
+            match crate::api::parse_redact(&entries.join(";")) {
+                Ok(v) => Some(v),
+                Err(e) => return format!("Error: {e:#}"),
+            }
+        };
+        let redact_style = match input.redact_style.as_deref() {
+            Some(_) if redact.is_none() => {
+                return "Error: redact_style needs redact_faces or redact_boxes.".into();
+            }
+            Some(s) => match crate::api::normalize_redact_style(s) {
+                Ok(v) => Some(v),
+                Err(e) => return format!("Error: {e:#}"),
+            },
+            None => None,
+        };
+
         let client = MochifyClient::new(self.api_key.clone());
         let params = ProcessParams {
             format: input.format,
@@ -301,6 +363,8 @@ impl MochifyMcp {
             optimize_for_web: input.optimize_for_web,
             lossless: input.lossless,
             region,
+            redact,
+            redact_style,
         };
 
         match client.squish(&path, &params, &out_dir).await {
@@ -332,16 +396,31 @@ impl MochifyMcp {
                     }
                     None => String::new(),
                 };
+                // Say what redaction actually covered. A faces request that found none
+                // still succeeds, so the model has to be told, not left to assume.
+                let redact_note = match (meta.redacted.as_deref(), meta.redacted_faces.as_deref()) {
+                    (Some(n), Some("0")) => format!(
+                        " (redacted {n} area(s); the face detector found NO faces, so none were \
+                         hidden by it — check the output and add redact_boxes for any it missed)"
+                    ),
+                    (Some(n), Some(f)) => format!(
+                        " (redacted {n} area(s), {f} of them faces found by the detector — it can \
+                         miss small or side-on faces)"
+                    ),
+                    (Some(n), None) => format!(" (redacted {n} area(s))"),
+                    _ => String::new(),
+                };
                 let usage_note = match client.get_usage().await {
                     Ok(u) => format!(" ({} requests remaining today)", u.remaining),
                     Err(_) => String::new(),
                 };
                 format!(
-                    "Saved to {}{}{}{}{}",
+                    "Saved to {}{}{}{}{}{}",
                     out_path.display(),
                     hdr_note,
                     lossless_note,
                     region_note,
+                    redact_note,
                     usage_note
                 )
             }
@@ -539,7 +618,9 @@ impl ServerHandler for MochifyMcp {
                  NOT need to read the file yourself, and you can access local files. \
                  The one exception is a crop that names content (\"crop to the feet\", \
                  \"just the logo\"): view the image, pick the rectangle, and pass it to \
-                 squish as `region` in fractions of the upright image. \
+                 squish as `region` in fractions of the upright image. The same goes for \
+                 hiding specific things (\"hide the number plate\"): pass them as \
+                 `redact_boxes`. To hide faces, `redact_faces` needs no looking at all. \
                  Use the squish tool for any image task (compression, format conversion, \
                  resizing, cropping, rotation, background removal, brightness, quality, \
                  lossless encoding, web optimization, Ultra HDR gain maps). \

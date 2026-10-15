@@ -284,6 +284,18 @@ async fn process_files(args: Args) -> Result<()> {
         None => None,
     };
 
+    let redact = match args.redact.as_deref() {
+        Some(r) => Some(api::parse_redact(r)?),
+        None => None,
+    };
+    // A style with nothing to redact would come back untouched — refuse it rather
+    // than let a typo in --redact fail open.
+    let redact_style = match args.redact_style.as_deref() {
+        Some(_) if redact.is_none() => anyhow::bail!("--redact-style needs --redact"),
+        Some(s) => Some(api::normalize_redact_style(s)?),
+        None => None,
+    };
+
     // Explicit CLI flags — these always win over prompt-derived params.
     let explicit = ProcessParams {
         format: args.format,
@@ -308,6 +320,8 @@ async fn process_files(args: Args) -> Result<()> {
         optimize_for_web: args.optimize_for_web.then_some(true),
         lossless: args.lossless.then_some(true),
         region,
+        redact,
+        redact_style,
     };
 
     // If a prompt was supplied, resolve params for all files in one request.
@@ -391,6 +405,7 @@ async fn process_files(args: Args) -> Result<()> {
             println!("{}", out.display());
             warn_if_hdr_dropped(&params, &meta);
             warn_if_lossless_downgraded(&params, &meta);
+            warn_if_no_faces_redacted(&params, &meta);
             if verbose {
                 print_squish_meta(&meta);
             }
@@ -750,6 +765,22 @@ fn warn_if_lossless_downgraded(params: &ProcessParams, meta: &SquishMeta) {
     }
 }
 
+/// `faces` is best-effort: the detector misses small faces and side profiles. When it
+/// found none, the request still succeeds — so say so, every time, rather than let a
+/// privacy step that did nothing look like one that worked.
+fn warn_if_no_faces_redacted(params: &ProcessParams, meta: &SquishMeta) {
+    let asked = params
+        .redact
+        .as_deref()
+        .is_some_and(|r| r.split(';').any(|e| e == "faces"));
+    if asked && meta.redacted_faces.as_deref() == Some("0") {
+        eprintln!(
+            "  note: no faces were found, so none were hidden. The detector can miss small faces \
+             and side profiles — check the output, or add boxes with --redact."
+        );
+    }
+}
+
 fn warn_if_hdr_dropped(params: &ProcessParams, meta: &SquishMeta) {
     if params.hdr.is_none() || meta.hdr.as_deref() != Some("false") {
         return;
@@ -822,6 +853,12 @@ fn format_params_summary(p: &ProcessParams) -> String {
     if let Some(ref r) = p.region {
         parts.push(format!("region {r}"));
     }
+    if let Some(ref r) = p.redact {
+        match p.redact_style.as_deref() {
+            Some("blur") => parts.push(format!("redact {r} (blur)")),
+            _ => parts.push(format!("redact {r}")),
+        }
+    }
     if parts.is_empty() {
         "original settings".into()
     } else {
@@ -883,6 +920,9 @@ fn print_squish_meta(meta: &SquishMeta) {
     if let Some(ref region) = meta.region {
         parts.push(format!("region {region} px"));
     }
+    if let Some(ref n) = meta.redacted {
+        parts.push(format!("{n} redacted"));
+    }
     eprintln!("  ← {}", parts.join(" · "));
 }
 
@@ -908,6 +948,8 @@ fn merge_params(base: ProcessParams, overrides: ProcessParams) -> ProcessParams 
         optimize_for_web: overrides.optimize_for_web.or(base.optimize_for_web),
         lossless: overrides.lossless.or(base.lossless),
         region: overrides.region.or(base.region),
+        redact: overrides.redact.or(base.redact),
+        redact_style: overrides.redact_style.or(base.redact_style),
     }
 }
 

@@ -91,6 +91,8 @@ mochify [OPTIONS] <FILES>...
 | `-H, --height <N>` | Target height in pixels |
 | `--crop` | Crop to exact dimensions (saliency-guided) |
 | `--region <X,Y,W,H>` | Crop to a rectangle, as fractions `0–1` of the upright image from the top-left |
+| `--redact <SPEC>` | Hide areas: `faces` and/or `;`-separated boxes `x,y,w,h` (same convention as `--region`) |
+| `--redact-style <STYLE>` | `fill` (solid black, default) or `blur` (cosmetic only) |
 | `-r, --rotation <DEG>` | Rotation: `0`, `90`, `180`, `270` |
 | `-o, --output <DIR>` | Output directory (default: same as input) |
 | `-n, --name <NAME>` | Base name for the output file (without extension) |
@@ -174,6 +176,25 @@ mochify photo.jpg --region 0.2,0.1,0.6,0.8 -w 800 -t webp
 The four numbers are `x,y,width,height` as **fractions** of the image (0 to 1), measured from the top-left of the picture as it displays — the right way up, even for a phone photo stored sideways. Fractions rather than pixels so the same box works whatever size the image is viewed at. A value above 1 is refused before the request goes out, since that is almost always a box in pixels. The region is cut first: `-w`/`-H`, `--crop`, `--rotation` and `--remove-bg` all act on it. `--verbose` prints the pixel rectangle that was actually cut.
 
 Over MCP this is how an assistant can crop to *content* — "crop to the feet", "just the logo": it looks at the image itself, picks the box, and Mochify only ever receives the four numbers.
+
+### Redaction
+
+Hide faces, number plates, addresses or anything else before an image goes anywhere:
+
+```bash
+# Every face, found automatically
+mochify family.jpg --redact faces
+
+# A number plate, as a box (fractions of the upright image, like --region)
+mochify car.jpg --redact 0.38,0.71,0.24,0.08
+
+# Both, softened with a blur instead of a solid fill
+mochify street.jpg --redact "faces;0.38,0.71,0.24,0.08" --redact-style blur
+```
+
+Separate entries with `;` — the `,` belongs to the box. `fill` (solid black) is the default and the one to use for anything that must stay secret; `blur` is for the look of a blurred face, and blurred text or faces can sometimes be recovered.
+
+Redaction always strips metadata (EXIF can hold a thumbnail of the original) and removes any HDR gain map (which holds the scene's structure), even if you asked to keep them. `faces` is best-effort — it can miss small faces and side profiles — so the CLI says when it found none. Check the output before sharing it.
 
 ### HDR (Ultra HDR gain maps)
 

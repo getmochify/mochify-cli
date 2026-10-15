@@ -41,6 +41,11 @@ pub struct ProcessParams {
     /// Explicit crop, already normalised to the wire form `x,y,w,h` — fractions 0–1 of
     /// the upright image, top-left origin. See `normalize_region`.
     pub region: Option<String>,
+    /// Areas to hide, already normalised to the wire form: `;`-separated entries, each
+    /// `faces` or an `x,y,w,h` box in the `region` convention. See `parse_redact`.
+    pub redact: Option<String>,
+    /// `fill` (solid black, the default) or `blur` (cosmetic only).
+    pub redact_style: Option<String>,
 }
 
 /// Parameters for a `/v1/pdf` request. `op` selects the operation and decides which of
@@ -270,6 +275,11 @@ pub struct SquishMeta {
     /// source. Fractions round and an over-the-edge box is trimmed, so this — not the
     /// request — is what the output shows. Only sent when `region` was requested.
     pub region: Option<String>,
+    /// `X-Mochify-Redacted`: how many areas were hidden, faces included.
+    pub redacted: Option<String>,
+    /// `X-Mochify-Redacted-Faces`: how many faces the detector found. Sent whenever
+    /// `faces` was asked for — `0` means nothing was hidden by it, which has to be said.
+    pub redacted_faces: Option<String>,
 }
 
 /// Headers `/v1/pdf` reports back. Which are present depends on the op.
@@ -492,6 +502,8 @@ impl MochifyClient {
             hdr: hdr("x-mochify-hdr"),
             lossless: hdr("x-mochify-lossless"),
             region: hdr("x-mochify-region"),
+            redacted: hdr("x-mochify-redacted"),
+            redacted_faces: hdr("x-mochify-redacted-faces"),
         };
 
         let image_bytes = response
@@ -914,6 +926,8 @@ fn expand_file_variants(file: &PromptFileResult) -> Vec<ProcessParams> {
                 lossless: file.lossless.filter(|&on| on),
                 // The NLP never sees the image, so it cannot draw a box.
                 region: None,
+                redact: None,
+                redact_style: None,
             });
         }
     }
@@ -974,6 +988,12 @@ fn build_squish_query(params: &ProcessParams) -> Vec<(&'static str, String)> {
     if let Some(ref region) = params.region {
         query.push(("region", region.clone()));
     }
+    if let Some(ref redact) = params.redact {
+        query.push(("redact", redact.clone()));
+    }
+    if let Some(ref style) = params.redact_style {
+        query.push(("redactStyle", style.clone()));
+    }
     query
 }
 
@@ -1009,6 +1029,59 @@ pub fn normalize_region(values: &[f64]) -> Result<String> {
         .map(|v| v.to_string())
         .collect::<Vec<_>>()
         .join(","))
+}
+
+/// Most boxes one request may hide; mirrors mochify-core's `kMaxRedactBoxes`.
+pub const MAX_REDACT_BOXES: usize = 64;
+
+/// `--redact "faces;0.62,0.81,0.2,0.06"` → the wire form. Entries are separated by `;`
+/// (`,` belongs to the box), each `faces` or a box checked by [`parse_region`]. Mirrors
+/// mochify-core's `resolveRedact`, so a malformed list costs no upload.
+pub fn parse_redact(s: &str) -> Result<String> {
+    let mut faces = false;
+    let mut boxes: Vec<String> = Vec::new();
+    for (i, entry) in s
+        .split(';')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .enumerate()
+    {
+        if entry.eq_ignore_ascii_case("faces") {
+            faces = true;
+            continue;
+        }
+        if boxes.len() >= MAX_REDACT_BOXES {
+            anyhow::bail!("too many redact boxes (max {MAX_REDACT_BOXES})");
+        }
+        let b = parse_region(entry).map_err(|e| {
+            anyhow::anyhow!(
+                "redact entry {}: {e}. Separate boxes with ';', or use 'faces'",
+                i + 1
+            )
+        })?;
+        boxes.push(b);
+    }
+    if !faces && boxes.is_empty() {
+        anyhow::bail!("redact must list at least one box x,y,w,h or 'faces'");
+    }
+    let mut out: Vec<String> = Vec::new();
+    if faces {
+        out.push("faces".into());
+    }
+    out.extend(boxes);
+    Ok(out.join(";"))
+}
+
+/// `fill` (default) or `blur`. Anything else is refused rather than guessed at: a
+/// privacy setting is the wrong place to fall back to a default silently.
+pub fn normalize_redact_style(s: &str) -> Result<String> {
+    match s.trim().to_lowercase().as_str() {
+        "fill" | "black" | "solid" => Ok("fill".into()),
+        "blur" => Ok("blur".into()),
+        other => anyhow::bail!(
+            "Unknown redact style '{other}'. Use 'fill' (solid black, the safe choice) or 'blur' (cosmetic only)."
+        ),
+    }
 }
 
 /// `--region 0.1,0.5,0.4,0.5` → the wire form, via [`normalize_region`].
@@ -1432,6 +1505,38 @@ mod tests {
                 .iter()
                 .any(|(k, _)| *k == "region")
         );
+    }
+
+    #[test]
+    fn redact_is_validated_and_sent_with_semicolons() {
+        assert_eq!(parse_redact("faces").unwrap(), "faces");
+        assert_eq!(
+            parse_redact(" 0.1,0.2,0.3,0.4 ; FACES ;").unwrap(),
+            "faces;0.1,0.2,0.3,0.4"
+        );
+        let px = parse_redact("faces;120,340,800,600")
+            .unwrap_err()
+            .to_string();
+        assert!(px.contains("entry 2") && px.contains("not pixels"), "{px}");
+        // ',' instead of ';' between boxes is one eight-value box.
+        assert!(parse_redact("0.1,0.1,0.2,0.2,0.5,0.5,0.2,0.2").is_err());
+        assert!(parse_redact(";;").is_err());
+        assert!(parse_redact(&"0.1,0.1,0.1,0.1;".repeat(MAX_REDACT_BOXES + 1)).is_err());
+
+        assert_eq!(normalize_redact_style("Blur").unwrap(), "blur");
+        assert_eq!(normalize_redact_style("fill").unwrap(), "fill");
+        assert!(normalize_redact_style("pixelate").is_err());
+
+        let q = build_squish_query(&ProcessParams {
+            redact: Some("faces;0.1,0.2,0.3,0.4".into()),
+            redact_style: Some("blur".into()),
+            ..Default::default()
+        });
+        assert!(
+            q.iter()
+                .any(|(k, v)| *k == "redact" && v == "faces;0.1,0.2,0.3,0.4")
+        );
+        assert!(q.iter().any(|(k, v)| *k == "redactStyle" && v == "blur"));
     }
 
     #[test]
