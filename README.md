@@ -90,6 +90,7 @@ mochify [OPTIONS] <FILES>...
 | `-w, --width <N>` | Target width in pixels |
 | `-H, --height <N>` | Target height in pixels |
 | `--crop` | Crop to exact dimensions (saliency-guided) |
+| `--region <X,Y,W,H>` | Crop to a rectangle, as fractions `0–1` of the upright image from the top-left |
 | `-r, --rotation <DEG>` | Rotation: `0`, `90`, `180`, `270` |
 | `-o, --output <DIR>` | Output directory (default: same as input) |
 | `-n, --name <NAME>` | Base name for the output file (without extension) |
@@ -157,6 +158,22 @@ mochify scan.png -t webp --lossless
 ```
 
 `--lossless` only works for `jxl`, `webp` and `png` — `jpg` and `avif` are rejected before the request goes out. It overrides `-q` and `--smart-compress`, and the output is usually **larger** than the input: lossless preserves pixels, not file size. A source that is already lossy (JPEG, AVIF, HEIC) comes back as the best lossy encode instead, since nothing can restore what that file discarded — the CLI says so when that happens.
+
+### Cropping to a region
+
+`--crop` finds the subject itself. `--region` is for when *you* — or the AI assistant driving the MCP server — already know which part of the picture you want:
+
+```bash
+# The bottom-left quarter
+mochify photo.jpg --region 0,0.5,0.5,0.5
+
+# A region, then sized: -w/-H apply to the cropped part
+mochify photo.jpg --region 0.2,0.1,0.6,0.8 -w 800 -t webp
+```
+
+The four numbers are `x,y,width,height` as **fractions** of the image (0 to 1), measured from the top-left of the picture as it displays — the right way up, even for a phone photo stored sideways. Fractions rather than pixels so the same box works whatever size the image is viewed at. A value above 1 is refused before the request goes out, since that is almost always a box in pixels. The region is cut first: `-w`/`-H`, `--crop`, `--rotation` and `--remove-bg` all act on it. `--verbose` prints the pixel rectangle that was actually cut.
+
+Over MCP this is how an assistant can crop to *content* — "crop to the feet", "just the logo": it looks at the image itself, picks the box, and Mochify only ever receives the four numbers.
 
 ### HDR (Ultra HDR gain maps)
 

@@ -29,6 +29,12 @@ pub struct Args {
     #[arg(long)]
     pub crop: bool,
 
+    /// Crop to a region before anything else: x,y,w,h as fractions 0–1 of the image as
+    /// it displays (upright), from the top-left — e.g. 0.25,0.5,0.5,0.5 is the middle of
+    /// the bottom half. -w/-H then size the cropped region.
+    #[arg(long, value_name = "X,Y,W,H")]
+    pub region: Option<String>,
+
     /// Rotation in degrees (0, 90, 180, 270)
     #[arg(short, long, value_name = "DEG")]
     pub rotation: Option<u32>,

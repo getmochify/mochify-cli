@@ -38,6 +38,9 @@ pub struct ProcessParams {
     /// `"1"` preserves a gain map the source already has, `"generate"` also synthesises
     /// one for a plain SDR source. Only JPEG output can carry a gain map.
     pub hdr: Option<String>,
+    /// Explicit crop, already normalised to the wire form `x,y,w,h` — fractions 0–1 of
+    /// the upright image, top-left origin. See `normalize_region`.
+    pub region: Option<String>,
 }
 
 /// Parameters for a `/v1/pdf` request. `op` selects the operation and decides which of
@@ -263,6 +266,10 @@ pub struct SquishMeta {
     /// `X-Mochify-Lossless`: `true` (pixel-exact) or `downgraded` (the best lossy encode,
     /// because the source was already lossy). Only sent when `lossless` was requested.
     pub lossless: Option<String>,
+    /// `X-Mochify-Region`: the rectangle actually cut, `x,y,w,h` in pixels of the upright
+    /// source. Fractions round and an over-the-edge box is trimmed, so this — not the
+    /// request — is what the output shows. Only sent when `region` was requested.
+    pub region: Option<String>,
 }
 
 /// Headers `/v1/pdf` reports back. Which are present depends on the op.
@@ -484,6 +491,7 @@ impl MochifyClient {
                 .unwrap_or(false),
             hdr: hdr("x-mochify-hdr"),
             lossless: hdr("x-mochify-lossless"),
+            region: hdr("x-mochify-region"),
         };
 
         let image_bytes = response
@@ -904,6 +912,8 @@ fn expand_file_variants(file: &PromptFileResult) -> Vec<ProcessParams> {
                 brightness: file.brightness.filter(|&b| b != 0),
                 optimize_for_web: file.optimize_for_web.filter(|&on| on),
                 lossless: file.lossless.filter(|&on| on),
+                // The NLP never sees the image, so it cannot draw a box.
+                region: None,
             });
         }
     }
@@ -961,7 +971,58 @@ fn build_squish_query(params: &ProcessParams) -> Vec<(&'static str, String)> {
     if params.lossless == Some(true) {
         query.push(("lossless", "1".to_string()));
     }
+    if let Some(ref region) = params.region {
+        query.push(("region", region.clone()));
+    }
     query
+}
+
+/// Validate a crop region and render it in the wire form `x,y,w,h`.
+///
+/// Fractions 0–1 of the upright image, top-left origin. The API applies the same rules
+/// and 400s anything else; checking here means a bad box costs no request. Mirrors
+/// `resolveRegion` in mochify-core: a box that runs past the edge is left for the API
+/// to trim (it is a hint, and "a bit past the edge" means one thing), but a value
+/// above 1 is refused, because that is a box measured in pixels and clamping it would
+/// quietly crop the bottom-right corner.
+pub fn normalize_region(values: &[f64]) -> Result<String> {
+    const SHAPE: &str = "region must be four fractions x,y,w,h between 0 and 1 \
+                         (e.g. 0.1,0.5,0.4,0.5), measured on the upright image from the top-left";
+    if values.len() != 4 || values.iter().any(|v| !v.is_finite()) {
+        anyhow::bail!(SHAPE);
+    }
+    let (x, y, w, h) = (values[0], values[1], values[2], values[3]);
+    if values.iter().any(|&v| v > 1.0) {
+        anyhow::bail!("region values are fractions of the image (0 to 1), not pixels");
+    }
+    if x < 0.0 || y < 0.0 {
+        anyhow::bail!("region x and y must be between 0 and 1");
+    }
+    if w <= 0.0 || h <= 0.0 {
+        anyhow::bail!("region width and height must be greater than 0");
+    }
+    if x >= 1.0 || y >= 1.0 {
+        anyhow::bail!("region starts outside the image");
+    }
+    Ok(values
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+/// `--region 0.1,0.5,0.4,0.5` → the wire form, via [`normalize_region`].
+pub fn parse_region(s: &str) -> Result<String> {
+    let values = s
+        .split(',')
+        .map(|t| t.trim().parse::<f64>())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "region must be four comma-separated numbers x,y,w,h between 0 and 1 (e.g. 0.1,0.5,0.4,0.5)"
+            )
+        })?;
+    normalize_region(&values)
 }
 
 /// Formats that can hold pixel-exact output. The API answers `lossless` with jpg or
@@ -1328,6 +1389,49 @@ mod tests {
         assert!(has("brightness", "-25"));
         assert!(has("optimizeForWeb", "1"));
         assert!(has("lossless", "1"));
+    }
+
+    #[test]
+    fn region_is_validated_and_sent_as_fractions() {
+        assert_eq!(
+            parse_region("0.1, 0.5,0.4 ,0.5").unwrap(),
+            "0.1,0.5,0.4,0.5"
+        );
+        assert_eq!(normalize_region(&[0.0, 0.0, 1.0, 1.0]).unwrap(), "0,0,1,1");
+        // Past the edge is the API's to trim, not ours to refuse.
+        assert!(normalize_region(&[0.6, 0.6, 0.5, 0.5]).is_ok());
+
+        // Pixels are the mistake a model makes; the message has to say so.
+        let px = parse_region("120,340,800,600").unwrap_err().to_string();
+        assert!(px.contains("not pixels"), "{px}");
+
+        for bad in [
+            "0.1,0.2,0.3",
+            "0.1,0.2,0.3,0.4,0.5",
+            "0.1,,0.3,0.4",
+            "a,b,c,d",
+            "NaN,0.2,0.3,0.4",
+            "inf,0.2,0.3,0.4",
+            "-0.1,0.2,0.3,0.4",
+            "0.1,0.2,0,0.4",
+            "1,0,0.5,0.5",
+        ] {
+            assert!(parse_region(bad).is_err(), "{bad} should be rejected");
+        }
+
+        let q = build_squish_query(&ProcessParams {
+            region: Some("0.1,0.5,0.4,0.5".into()),
+            ..Default::default()
+        });
+        assert!(
+            q.iter()
+                .any(|(k, v)| *k == "region" && v == "0.1,0.5,0.4,0.5")
+        );
+        assert!(
+            !build_squish_query(&ProcessParams::default())
+                .iter()
+                .any(|(k, _)| *k == "region")
+        );
     }
 
     #[test]

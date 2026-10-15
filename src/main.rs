@@ -277,6 +277,13 @@ async fn process_files(args: Args) -> Result<()> {
         }
     }
 
+    // A malformed region is a 400 the API would charge nothing for, but it would still
+    // cost an upload per file to be told.
+    let region = match args.region.as_deref() {
+        Some(r) => Some(api::parse_region(r)?),
+        None => None,
+    };
+
     // Explicit CLI flags — these always win over prompt-derived params.
     let explicit = ProcessParams {
         format: args.format,
@@ -300,6 +307,7 @@ async fn process_files(args: Args) -> Result<()> {
         brightness: args.brightness,
         optimize_for_web: args.optimize_for_web.then_some(true),
         lossless: args.lossless.then_some(true),
+        region,
     };
 
     // If a prompt was supplied, resolve params for all files in one request.
@@ -811,6 +819,9 @@ fn format_params_summary(p: &ProcessParams) -> String {
     if p.lossless == Some(true) {
         parts.push("lossless".into());
     }
+    if let Some(ref r) = p.region {
+        parts.push(format!("region {r}"));
+    }
     if parts.is_empty() {
         "original settings".into()
     } else {
@@ -869,6 +880,9 @@ fn print_squish_meta(meta: &SquishMeta) {
     if let Some(ref lossless) = meta.lossless {
         parts.push(format!("lossless {lossless}"));
     }
+    if let Some(ref region) = meta.region {
+        parts.push(format!("region {region} px"));
+    }
     eprintln!("  ← {}", parts.join(" · "));
 }
 
@@ -893,6 +907,7 @@ fn merge_params(base: ProcessParams, overrides: ProcessParams) -> ProcessParams 
         brightness: overrides.brightness.or(base.brightness),
         optimize_for_web: overrides.optimize_for_web.or(base.optimize_for_web),
         lossless: overrides.lossless.or(base.lossless),
+        region: overrides.region.or(base.region),
     }
 }
 

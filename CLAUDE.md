@@ -86,6 +86,7 @@ src/
 - **One `--dpi` and one `--max-width` across all five PDF ops.** That is how people think about it ("what resolution", "how wide"), while the API spells them differently per op (`dpi` vs `maxDpi`, `maxWidth` vs `maxDimension`). `PdfParams::for_op()` owns that mapping, so the CLI and the MCP tools cannot drift apart. The web app maps its NLP output the same way.
 - **`-q/--quality` serves both paths.** An invocation is either images or PDFs, never both, so a second quality flag would only be a second thing to get wrong — same reasoning as the single `--dpi`.
 - **Local pre-flight on `--lossless`.** The API 400s `lossless` with `jpg`/`avif`; `api::LOSSLESS_FORMATS` lets the CLI and the MCP tool refuse it without spending a request. `X-Mochify-Lossless: downgraded` (an already-lossy source) is reported back, since the request could not be honoured literally.
+- **`region` is the MCP's "look, then crop" path.** The client model views the image, picks a box, and passes `region` as `[x, y, w, h]` fractions of the upright image — the image never reaches a model of Mochify's. It is the one squish param that needs the model to see the file, which is why the tool description and `get_info` carve it out of "do not load the image". `api::normalize_region` mirrors mochify-core's `resolveRegion` so a bad box (above all a box in pixels) costs no request; the core repo's CLAUDE.md has the reasoning behind the convention. The tool result echoes `X-Mochify-Region` so the model can check where its box landed. The NLP prompt path never sets it — it cannot see the image.
 - **HDR is a squish param** (`--hdr preserve|generate`, `hdr=1|generate` on the wire). The NLP returns a plain boolean, which maps to `generate` — the mode that also synthesises a gain map for an SDR source, which is what someone asking for HDR in words means. Only `jpg` output can carry one, so the CLI reads `X-Mochify-HDR` back and says so when the output carries none.
 - **Batches run concurrently, but report in order.** `run_batch()` in `main.rs` keeps `-j/--jobs` requests in flight (default 4) across both the image and PDF loops, which previously awaited one round trip per file. A finished job waits in its slot until every job submitted before it has been printed, so stdout still matches the order the files were given — `mochify *.jpg > list.txt` and a piped `find` both depend on that. One job per (file, variant): a prompt that answers a single file with two formats overlaps the same way two files do.
 - **Auth is optional** — without `--api-key` / `MOCHIFY_API_KEY`, requests go through on the free tier (25/month; unauthenticated IPs get 3/month). The key is sent as `Authorization: Bearer <key>`.
@@ -113,8 +114,9 @@ src/
 | Brightness | `brightness` | -100..=100 |
 | Web delivery | `optimizeForWeb` | bool |
 | Lossless | `lossless` | bool — `jxl` \| `webp` \| `png` only |
+| Region | `region` | `x,y,w,h` — fractions 0–1 of the upright image, top-left origin |
 
-Response headers worth reading: `X-Mochify-HDR` (`true` \| `generated` \| `false`), `X-Mochify-Lossless` (`true` \| `downgraded`), `X-Mochify-Optimized`, `X-Mochify-Quality`, `X-Mochify-Saliency`, `X-Mochify-BgRemoved`.
+Response headers worth reading: `X-Mochify-Region` (the `x,y,w,h` pixel rect actually cut), `X-Mochify-HDR` (`true` \| `generated` \| `false`), `X-Mochify-Lossless` (`true` \| `downgraded`), `X-Mochify-Optimized`, `X-Mochify-Quality`, `X-Mochify-Saliency`, `X-Mochify-BgRemoved`.
 
 `POST /v1/pdf` — raw PDF bytes (`Content-Type: application/pdf`) as the body, except `op=create`, which takes `multipart/form-data` with each image appended as `images`:
 

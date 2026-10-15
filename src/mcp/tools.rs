@@ -94,6 +94,20 @@ pub struct SquishInput {
         description = "Ultra HDR gain map handling. \"preserve\" keeps a gain map the source already has (and does nothing to an SDR source); \"generate\" keeps it AND synthesizes one when the source is plain SDR — use \"generate\" whenever the user asks to make something HDR. Only jpg output can carry a gain map, so set `type` to jpg unless the user asked for another format. Ignored alongside remove_background or clarity, which change the base the gain map is measured against."
     )]
     pub hdr: Option<String>,
+
+    #[schemars(
+        description = "Crop to a rectangle YOU choose by looking at the image — for requests that name \
+         content rather than a size, like \"crop to the feet\", \"just the logo\" or \"cut out the \
+         person on the left\". View the image first; you are the one who sees it, it is never sent \
+         to another model. Four numbers [x, y, width, height] as FRACTIONS of the image from 0 to 1, \
+         origin top-left, measured on the image as it displays upright — e.g. [0.25, 0.5, 0.5, 0.5] \
+         is the middle of the bottom half. Never pixels. Leave a little margin rather than cutting \
+         tight to the subject. Applied first: width/height then size the cropped region, and \
+         rotation and remove_background act on it. The result reports the pixel rectangle actually \
+         cut, so you can check it against what you meant. For a plain \"crop to WxH around the \
+         subject\" use crop with width and height instead — it finds the subject itself."
+    )]
+    pub region: Option<Vec<f64>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -209,8 +223,9 @@ impl MochifyMcp {
         description = "Process a single image file on the user's local filesystem: format \
          conversion (jpg/png/webp/avif/jxl), resizing, cropping, rotation, background removal, \
          brightness, clarity, quality control (fixed, saliency-guided or lossless), web \
-         optimization, and Ultra HDR gain maps. Reads the file and writes the result itself, so \
-         do not load the image into the conversation first. Use `pdf` instead for anything that \
+         optimization, Ultra HDR gain maps, and cropping to a region you pick by looking at the \
+         image. Reads the file and writes the result itself, so do not load the image into the \
+         conversation first — unless you are choosing a `region`, which needs you to see it. Use `pdf` instead for anything that \
          takes a PDF in, and `pdf_create` to build a PDF out of images. Writes a new file beside \
          the input (or in output_dir) and never overwrites the original: a name collision gets a \
          numeric suffix.",
@@ -258,6 +273,14 @@ impl MochifyMcp {
             }
         }
 
+        let region = match input.region.as_deref() {
+            Some(values) => match crate::api::normalize_region(values) {
+                Ok(v) => Some(v),
+                Err(e) => return format!("Error: {e:#}"),
+            },
+            None => None,
+        };
+
         let client = MochifyClient::new(self.api_key.clone());
         let params = ProcessParams {
             format: input.format,
@@ -277,6 +300,7 @@ impl MochifyMcp {
             brightness: input.brightness,
             optimize_for_web: input.optimize_for_web,
             lossless: input.lossless,
+            region,
         };
 
         match client.squish(&path, &params, &out_dir).await {
@@ -300,15 +324,24 @@ impl MochifyMcp {
                     (Some(true), Some("true")) => " (pixel-exact)",
                     _ => "",
                 };
+                // What was actually cut, in pixels — the model drew its box on a scaled
+                // copy, so this is how it can tell whether the crop landed.
+                let region_note = match meta.region.as_deref() {
+                    Some(px) => {
+                        format!(" (cropped to region x,y,w,h = {px} px of the upright image)")
+                    }
+                    None => String::new(),
+                };
                 let usage_note = match client.get_usage().await {
                     Ok(u) => format!(" ({} requests remaining today)", u.remaining),
                     Err(_) => String::new(),
                 };
                 format!(
-                    "Saved to {}{}{}{}",
+                    "Saved to {}{}{}{}{}",
                     out_path.display(),
                     hdr_note,
                     lossless_note,
+                    region_note,
                     usage_note
                 )
             }
@@ -504,6 +537,9 @@ impl ServerHandler for MochifyMcp {
                 "You have access to the mochify image and PDF processing API via four \
                  tools. They read files directly from the user's local filesystem — you do \
                  NOT need to read the file yourself, and you can access local files. \
+                 The one exception is a crop that names content (\"crop to the feet\", \
+                 \"just the logo\"): view the image, pick the rectangle, and pass it to \
+                 squish as `region` in fractions of the upright image. \
                  Use the squish tool for any image task (compression, format conversion, \
                  resizing, cropping, rotation, background removal, brightness, quality, \
                  lossless encoding, web optimization, Ultra HDR gain maps). \
