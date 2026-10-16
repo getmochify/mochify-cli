@@ -69,6 +69,12 @@ mochify auth login
 
 This opens your browser, where you sign in and authorize the CLI. Credentials are saved automatically to `~/.config/mochify/credentials.toml` — no environment variables or manual key copying required. Both the CLI and MCP server pick them up automatically.
 
+On a machine without a browser (over SSH, say), sign in with a code instead — open the link it prints on any device and type the code:
+
+```bash
+mochify auth login --no-browser
+```
+
 ```bash
 mochify auth status   # check whether you're signed in
 mochify auth logout   # remove saved credentials
