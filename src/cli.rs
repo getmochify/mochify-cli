@@ -174,7 +174,11 @@ pub enum Commands {
 #[derive(Subcommand)]
 pub enum AuthAction {
     /// Open browser to sign in and save credentials locally
-    Login,
+    Login {
+        /// Sign in with a code instead of opening a browser here (SSH, headless)
+        #[arg(long)]
+        no_browser: bool,
+    },
     /// Remove saved credentials
     Logout,
     /// Show current authentication status

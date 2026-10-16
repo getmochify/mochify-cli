@@ -1,9 +1,10 @@
 mod api;
 mod cli;
 mod credentials;
+mod login;
 mod mcp;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use api::{MochifyClient, PdfMeta, PdfOptions, PdfParams, PdfPrompt, ProcessParams, SquishMeta};
 use clap::Parser;
 use cli::{Args, AuthAction, Commands};
@@ -43,7 +44,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Commands::Auth { action }) => match action {
-            AuthAction::Login => auth_login().await,
+            AuthAction::Login { no_browser } => auth_login(no_browser).await,
             AuthAction::Logout => auth_logout(),
             AuthAction::Status => auth_status(),
         },
@@ -72,61 +73,11 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn auth_login() -> Result<()> {
-    use rand::RngCore;
-
-    let mut state_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut state_bytes);
-    let state: String = state_bytes.iter().map(|b| format!("{b:02x}")).collect();
-
-    let url = format!("{AUTH_URL}?state={state}");
-
-    if open::that(&url).is_err() {
-        println!("Open this URL in your browser to sign in:");
-        println!("  {url}");
-    } else {
-        println!("Browser opened. Sign in and authorize the CLI...");
-    }
-
-    let sp = spinner("Waiting for authorization (times out in 5 minutes)...");
-    let client = reqwest::Client::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(300);
-
-    loop {
-        if std::time::Instant::now() >= deadline {
-            sp.finish_and_clear();
-            anyhow::bail!("Authorization timed out. Run `mochify auth login` to try again.");
-        }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        let res = client
-            .get(format!("{WORKER_URL}/v1/cli/poll/{state}"))
-            .send()
-            .await;
-
-        let Ok(response) = res else { continue };
-
-        match response.status().as_u16() {
-            404 => continue,
-            200 => {
-                #[derive(serde::Deserialize)]
-                struct PollResponse {
-                    #[serde(rename = "apiKey")]
-                    api_key: String,
-                }
-                sp.finish_and_clear();
-                let body = response
-                    .json::<PollResponse>()
-                    .await
-                    .context("authorization succeeded but the response could not be parsed")?;
-                credentials::save(&body.api_key)?;
-                println!("Authenticated! Credentials saved to ~/.config/mochify/credentials.toml");
-                return Ok(());
-            }
-            _ => continue,
-        }
-    }
+async fn auth_login(no_browser: bool) -> Result<()> {
+    let api_key = login::login(WORKER_URL, AUTH_URL, no_browser).await?;
+    credentials::save(&api_key)?;
+    println!("Authenticated! Credentials saved to ~/.config/mochify/credentials.toml");
+    Ok(())
 }
 
 fn auth_logout() -> Result<()> {

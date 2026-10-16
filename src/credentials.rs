@@ -25,7 +25,29 @@ pub fn save(api_key: &str) -> Result<()> {
         api_key: api_key.to_owned(),
     })
     .unwrap();
-    std::fs::write(&p, content).context("failed to write credentials")
+    write_private(&p, content.as_bytes()).context("failed to write credentials")
+}
+
+// Owner-only: the file holds an API key, and the default mode would let any
+// other account on the machine read it.
+#[cfg(unix)]
+fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(p)?;
+    // mode() only applies on creation; tighten a file an older version wrote.
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    f.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_private(p: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(p, bytes)
 }
 
 pub fn clear() -> Result<()> {
