@@ -337,6 +337,9 @@ struct PromptResponse {
 pub struct MochifyClient {
     api_key: Option<String>,
     client: reqwest::Client,
+    /// Sent as `client=` on every charged request, so the server's usage count can
+    /// tell the CLI from the local MCP server. Carries the version, nothing else.
+    surface: String,
 }
 
 impl MochifyClient {
@@ -344,7 +347,14 @@ impl MochifyClient {
         Self {
             api_key,
             client: reqwest::Client::new(),
+            surface: format!("cli/{}", env!("CARGO_PKG_VERSION")),
         }
+    }
+
+    /// The same client, counted as the local MCP server rather than the CLI.
+    pub fn for_mcp(mut self) -> Self {
+        self.surface = format!("mcp_local/{}", env!("CARGO_PKG_VERSION"));
+        self
     }
 
     pub async fn get_usage(&self) -> Result<UsageInfo> {
@@ -463,6 +473,7 @@ impl MochifyClient {
             .client
             .post(format!("{BASE_URL}/v1/squish"))
             .query(&query)
+            .query(&[("client", &self.surface)])
             .header("Content-Type", mime)
             .body(bytes);
 
@@ -640,6 +651,7 @@ impl MochifyClient {
             .client
             .post(format!("{BASE_URL}/v1/pdf"))
             .query(&build_pdf_query(params))
+            .query(&[("client", &self.surface)])
             .header("Content-Type", "application/pdf")
             .body(bytes);
 
@@ -693,6 +705,7 @@ impl MochifyClient {
             .client
             .post(format!("{BASE_URL}/v1/pdf"))
             .query(&build_pdf_query(params))
+            .query(&[("client", &self.surface)])
             .multipart(form);
 
         let (result_bytes, meta) = self.send_pdf(req).await?;

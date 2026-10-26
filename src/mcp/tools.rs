@@ -343,7 +343,7 @@ impl MochifyMcp {
             None => None,
         };
 
-        let client = MochifyClient::new(self.api_key.clone());
+        let client = MochifyClient::new(self.api_key.clone()).for_mcp();
         let params = ProcessParams {
             format: input.format,
             width: input.width,
@@ -477,7 +477,7 @@ impl MochifyMcp {
             Err(e) => return format!("Error: {e:#}"),
         };
 
-        let client = MochifyClient::new(self.api_key.clone());
+        let client = MochifyClient::new(self.api_key.clone()).for_mcp();
         match client.pdf(&path, &params, &out_dir).await {
             Ok((out_path, meta)) => {
                 // How much smaller the PDF got is the entire point of optimize, and it
@@ -548,7 +548,7 @@ impl MochifyMcp {
             Err(e) => return format!("Error: {e:#}"),
         };
 
-        let client = MochifyClient::new(self.api_key.clone());
+        let client = MochifyClient::new(self.api_key.clone()).for_mcp();
         match client
             .pdf_create(&paths, &params, &out_dir, input.output_name.as_deref())
             .await
@@ -581,7 +581,7 @@ impl MochifyMcp {
         )
     )]
     async fn check_usage(&self) -> String {
-        let client = MochifyClient::new(self.api_key.clone());
+        let client = MochifyClient::new(self.api_key.clone()).for_mcp();
         match client.get_usage().await {
             Ok(u) => {
                 let plan = if u.plan.is_empty() {
